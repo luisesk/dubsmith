@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     bytes_total INTEGER DEFAULT 0,
     bytes_done INTEGER DEFAULT 0,
     phase TEXT,
+    manual_delay_ms INTEGER,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     completed_at REAL,
@@ -44,6 +45,7 @@ MIGRATIONS = [
     "ALTER TABLE jobs ADD COLUMN bytes_total INTEGER DEFAULT 0",
     "ALTER TABLE jobs ADD COLUMN bytes_done INTEGER DEFAULT 0",
     "ALTER TABLE jobs ADD COLUMN phase TEXT",
+    "ALTER TABLE jobs ADD COLUMN manual_delay_ms INTEGER",
 ]
 
 VALID_STATES = {"pending", "downloading", "syncing", "muxing", "done", "failed", "quarantined"}
@@ -65,6 +67,7 @@ class Job:
     bytes_total: int
     bytes_done: int
     phase: str | None
+    manual_delay_ms: int | None
     created_at: float
     updated_at: float
     completed_at: float | None
@@ -289,6 +292,7 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         bytes_total=g("bytes_total", 0) or 0,
         bytes_done=g("bytes_done", 0) or 0,
         phase=g("phase"),
+        manual_delay_ms=g("manual_delay_ms"),
         created_at=row["created_at"], updated_at=row["updated_at"],
         completed_at=row["completed_at"],
     )

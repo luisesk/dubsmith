@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import probe
+from .lang import lang_matches
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ def find_missing(sonarr, series_id: int, target_lang: str,
         except Exception as e:
             log.warning("probe failed for %s: %s", local_path, e)
             continue
-        if target_lang in langs:
+        if any(lang_matches(l, target_lang) for l in langs):
             continue
         for ep in file_to_eps.get(f["id"], []):
             missing.append(MissingDub(

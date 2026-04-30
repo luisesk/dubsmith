@@ -60,6 +60,10 @@
           <button class="btn sm ghost" hx-post="/api/jobs/{{ j.id }}/retry" hx-swap="none" title="retry"
             onclick="setTimeout(()=>softReload(),300)">↻</button>
           {% endif %}
+          {% if j.state == 'quarantined' %}
+          <button class="btn sm ghost" title="manual delay (ms)"
+            onclick="manualDelay({{ j.id }}, {{ j.sync_delay_ms or 0 }})">↹ ms</button>
+          {% endif %}
           {% if j.state != 'done' %}
           <button class="btn sm ghost" hx-post="/api/jobs/{{ j.id }}/skip" hx-swap="none" title="skip"
             onclick="setTimeout(()=>softReload(),300)">✕</button>
@@ -132,5 +136,19 @@ async function refreshLiveJobs() {
   }
 }
 setInterval(refreshLiveJobs, 1500);
+
+async function manualDelay(jobId, currentMs) {
+  const v = prompt(`Manual sync delay in milliseconds for job ${jobId}.\n\nPositive = pad the dub with leading silence (delay it).\nNegative = trim the dub's leading silence.\nDetected: ${currentMs} ms`,
+                   String(currentMs || 0));
+  if (v === null) return;
+  const delay = parseInt(v.trim(), 10);
+  if (Number.isNaN(delay)) { toast('not a number', 'err'); return; }
+  const r = await fetch(`/api/jobs/${jobId}/manual-delay`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({delay_ms: delay}), credentials:'same-origin',
+  });
+  if (r.ok) { toast(`queued · ${delay}ms`); setTimeout(softReload, 400); }
+  else { toast(await r.text(), 'err'); }
+}
 </script>
 {% endblock %}

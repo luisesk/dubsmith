@@ -76,47 +76,56 @@ class Worker:
         except Exception:
             pass
 
-        self.queue.set_state(job.id, "syncing")
-        self.queue.update_progress(job.id, progress=0.0, phase="cross-correlating")
-        try:
-            jpn_idx = probe.jpn_audio_index(job.target_path)
-            sync_cfg = cfg["sync"]
-            result = sync.detect(
-                job.target_path, jpn_idx, str(src_path),
-                trim_s=sync_cfg["trim_seconds"],
-                bound_s=sync_cfg["bound_seconds"],
-            )
-        except Exception as e:
-            self.queue.set_state(job.id, "failed", last_error=f"sync: {e}")
-            return
+        # If operator supplied a manual delay, skip detection entirely.
+        if job.manual_delay_ms is not None:
+            log.info("job %d using manual delay=%dms (skipping sync detect)", job.id, job.manual_delay_ms)
+            self.queue.set_state(job.id, "muxing",
+                                 sync_delay_ms=job.manual_delay_ms,
+                                 sync_score=999.0)  # 999 = sentinel for manual
+            result_delay = job.manual_delay_ms
+        else:
+            self.queue.set_state(job.id, "syncing")
+            self.queue.update_progress(job.id, progress=0.0, phase="cross-correlating")
+            try:
+                jpn_idx = probe.jpn_audio_index(job.target_path)
+                sync_cfg = cfg["sync"]
+                result = sync.detect(
+                    job.target_path, jpn_idx, str(src_path),
+                    trim_s=sync_cfg["trim_seconds"],
+                    bound_s=sync_cfg["bound_seconds"],
+                )
+            except Exception as e:
+                self.queue.set_state(job.id, "failed", last_error=f"sync: {e}")
+                return
 
-        log.info("sync delay=%dms score=%.2f", result.delay_ms, result.score)
+            log.info("sync delay=%dms score=%.2f", result.delay_ms, result.score)
 
-        if result.score < cfg["sync"]["min_score"]:
+            if result.score < cfg["sync"]["min_score"]:
+                self.queue.set_state(
+                    job.id, "quarantined",
+                    sync_delay_ms=result.delay_ms, sync_score=result.score,
+                    last_error=f"low confidence ({result.score:.2f}) — set manual delay if needed",
+                )
+                return
+            if abs(result.delay_ms) > cfg["sync"]["max_abs_delay_ms"]:
+                self.queue.set_state(
+                    job.id, "quarantined",
+                    sync_delay_ms=result.delay_ms, sync_score=result.score,
+                    last_error=f"delay {result.delay_ms}ms out of range — set manual delay if needed",
+                )
+                return
+
             self.queue.set_state(
-                job.id, "quarantined",
+                job.id, "muxing",
                 sync_delay_ms=result.delay_ms, sync_score=result.score,
-                last_error=f"low confidence ({result.score:.2f})",
             )
-            return
-        if abs(result.delay_ms) > cfg["sync"]["max_abs_delay_ms"]:
-            self.queue.set_state(
-                job.id, "quarantined",
-                sync_delay_ms=result.delay_ms, sync_score=result.score,
-                last_error=f"delay {result.delay_ms}ms out of range",
-            )
-            return
-
-        self.queue.set_state(
-            job.id, "muxing",
-            sync_delay_ms=result.delay_ms, sync_score=result.score,
-        )
+            result_delay = result.delay_ms
         self.queue.update_progress(job.id, progress=0.5, phase="mkvmerge")
         try:
             audio_lang = show.get("target_audio") or cfg["target_language"]["audio"]
             audio_label = show.get("target_audio_label") or cfg["target_language"]["audio_label"]
             mux.inject(
-                job.target_path, str(src_path), result.delay_ms,
+                job.target_path, str(src_path), result_delay,
                 lang=audio_lang, track_name=audio_label,
             )
             try:

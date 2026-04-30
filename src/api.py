@@ -14,12 +14,15 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import __version__, config, downloader, logbuf, probe, scanner, security
+from .audit import AuditLog
 from .queue import Queue
 from .settings_store import SettingsStore
 from .shows import ShowsStore
 from .sonarr import Sonarr
 from .sources import SourcesStore
 from .users import ROLES, UsersStore
+
+WEBHOOK_MAX_BYTES = 256 * 1024  # 256 KB
 
 log = logging.getLogger(__name__)
 
@@ -44,12 +47,12 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
              users: UsersStore | None = None) -> FastAPI:
     app = FastAPI(title="Dubsmith", version=__version__)
     login_throttle = security.LoginThrottle(max_attempts=5, window_seconds=300, lockout_seconds=900)
+    pw_throttle = security.LoginThrottle(max_attempts=5, window_seconds=300, lockout_seconds=900)
+    audit = AuditLog(config.data_dir() / "audit.log")
     # Session secret — persisted in settings.yml so cookies survive restarts.
     sec = (settings.load() if settings else {}).get("_session_secret") if settings else None
     if not sec and settings:
         sec = secrets.token_urlsafe(32)
-        settings.update("_session_secret", **{"_": sec}) if False else None
-        # use a dedicated section to avoid polluting "user" sections
         cur = settings.load()
         cur["_session_secret"] = sec
         settings.save(cur)
@@ -127,43 +130,68 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
         return f"Series {sid}"
 
     # ---------- login / logout (cookie session) ----------
+    def _csrf_token(request: Request) -> str:
+        """Per-session CSRF token, lazily generated and stored in session cookie."""
+        tok = request.session.get("_csrf")
+        if not tok:
+            tok = secrets.token_urlsafe(32)
+            request.session["_csrf"] = tok
+        return tok
+
     @app.get("/login", response_class=HTMLResponse)
     def login_page(request: Request, next: str = "/", error: str | None = None):
         return templates.TemplateResponse(
             request=request, name="login.html",
-            context={"next": next, "error": error},
+            context={"next": next, "error": error, "csrf": _csrf_token(request)},
         )
 
     @app.post("/login", response_class=HTMLResponse)
     async def login_submit(request: Request,
                            username: str = Form(...),
                            password: str = Form(...),
-                           next: str = Form("/")):
+                           next: str = Form("/"),
+                           csrf: str = Form("")):
         ip = request.client.host if request.client else "?"
+        # CSRF: validate against session-bound token
+        expected = request.session.get("_csrf", "")
+        if not expected or not csrf or not secrets.compare_digest(csrf, expected):
+            return templates.TemplateResponse(
+                request=request, name="login.html",
+                context={"next": next, "error": "session expired, retry",
+                         "csrf": _csrf_token(request)},
+                status_code=400,
+            )
         # username sanity (prevents log poisoning + denial-of-bucket)
         if not security.valid_username(username):
             return templates.TemplateResponse(
                 request=request, name="login.html",
-                context={"next": next, "error": "invalid username format"},
+                context={"next": next, "error": "invalid username format",
+                         "csrf": _csrf_token(request)},
                 status_code=400,
             )
         locked, secs = login_throttle.is_locked(ip, username)
         if locked:
             return templates.TemplateResponse(
                 request=request, name="login.html",
-                context={"next": next, "error": f"too many attempts; try again in {secs//60+1}min"},
+                context={"next": next, "error": f"too many attempts; try again in {secs//60+1}min",
+                         "csrf": _csrf_token(request)},
                 status_code=429,
             )
         if _check(username, password):
             login_throttle.reset(ip, username)
             request.session["user"] = username
+            # rotate csrf on auth state change
+            request.session["_csrf"] = secrets.token_urlsafe(32)
             log.info("login ok: user=%s ip=%s", username, ip)
+            audit.write(actor=username, ip=ip, action="login")
             return RedirectResponse(url=next or "/", status_code=303)
         login_throttle.record_failure(ip, username)
         log.warning("login fail: user=%s ip=%s", username, ip)
+        audit.write(actor=username, ip=ip, action="login", ok=False)
         return templates.TemplateResponse(
             request=request, name="login.html",
-            context={"next": next, "error": "invalid credentials"},
+            context={"next": next, "error": "invalid credentials",
+                     "csrf": _csrf_token(request)},
             status_code=401,
         )
 
@@ -244,7 +272,14 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
             sent = req.headers.get("x-webhook-secret") or req.query_params.get("secret") or ""
             if not secrets.compare_digest(sent, wh_secret):
                 raise HTTPException(401, "invalid webhook secret")
-        payload = await req.json()
+        # bound payload size before parsing
+        body = await req.body()
+        if len(body) > WEBHOOK_MAX_BYTES:
+            raise HTTPException(413, f"payload too large (>{WEBHOOK_MAX_BYTES} bytes)")
+        try:
+            payload = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            raise HTTPException(400, "invalid JSON")
         event = payload.get("eventType")
         if event not in ("Download", "Import"):
             return {"skipped": event}
@@ -279,6 +314,27 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
             raise HTTPException(404)
         queue.set_state(job_id, "done", last_error="manually skipped")
         return {"ok": True}
+
+    @app.post("/api/jobs/{job_id}/manual-delay", dependencies=[Depends(require_operator)])
+    def manual_delay(job_id: int, payload: dict, request: Request,
+                     current: str = Depends(require_auth)):
+        """Operator override: set manual_delay_ms and re-enqueue. Worker will skip
+        sync detection and mux using the supplied delay."""
+        j = queue.get(job_id)
+        if not j:
+            raise HTTPException(404)
+        try:
+            delay = int(payload.get("delay_ms"))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "delay_ms (int) required")
+        if abs(delay) > 60_000:
+            raise HTTPException(400, "delay must be within ±60000ms")
+        queue.set_state(job_id, "pending", manual_delay_ms=delay,
+                        last_error=f"manual delay {delay}ms")
+        ip = request.client.host if request.client else "?"
+        audit.write(actor=current, ip=ip, action="job.manual_delay",
+                    target=str(job_id), delay_ms=delay)
+        return {"ok": True, "delay_ms": delay}
 
     @app.post("/api/queue/retry-all", dependencies=[Depends(require_operator)])
     def retry_all_failed():
@@ -357,6 +413,38 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
     def metrics():
         return {**queue.metrics(), "stats": queue.stats(),
                 "per_series": queue.stats_per_series()}
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    def prom_metrics():
+        """Prometheus text exposition. Unauthenticated by design — bind behind a
+        reverse proxy ACL if exposing publicly."""
+        s = queue.stats()
+        m = queue.metrics()
+        lines = [
+            "# HELP dubsmith_info Build/version info",
+            "# TYPE dubsmith_info gauge",
+            f'dubsmith_info{{version="{__version__}"}} 1',
+            "# HELP dubsmith_jobs Job count by state",
+            "# TYPE dubsmith_jobs gauge",
+        ]
+        for state in ("pending", "downloading", "syncing", "muxing",
+                      "done", "failed", "quarantined"):
+            lines.append(f'dubsmith_jobs{{state="{state}"}} {s.get(state, 0)}')
+        lines += [
+            "# HELP dubsmith_done_total Jobs successfully completed",
+            "# TYPE dubsmith_done_total counter",
+            f'dubsmith_done_total {m.get("done_total", 0)}',
+            "# HELP dubsmith_done_24h Jobs done in the last 24 hours",
+            "# TYPE dubsmith_done_24h gauge",
+            f'dubsmith_done_24h {m.get("done_24h", 0)}',
+            "# HELP dubsmith_avg_abs_delay_ms Average absolute sync delay in ms",
+            "# TYPE dubsmith_avg_abs_delay_ms gauge",
+            f'dubsmith_avg_abs_delay_ms {m.get("avg_abs_delay_ms", 0)}',
+            "# HELP dubsmith_avg_sync_score Average sync confidence score",
+            "# TYPE dubsmith_avg_sync_score gauge",
+            f'dubsmith_avg_sync_score {m.get("avg_sync_score", 0)}',
+        ]
+        return "\n".join(lines) + "\n"
 
     @app.websocket("/ws/queue")
     async def ws_queue(ws: WebSocket):
@@ -515,15 +603,16 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
     def _proxy_image(series_id: int, cover_type: str):
         import httpx
         sonarr = _sonarr()
+        sonarr_url, sonarr_key = _sonarr_creds(cfg, settings)
         try:
             s = sonarr.series(series_id)
             for img in s.get("images", []) or []:
                 if img.get("coverType") == cover_type:
                     url = img.get("remoteUrl") or img.get("url")
-                    if url and url.startswith("/"):
+                    if url and url.startswith("/") and sonarr_url:
                         r = httpx.get(
-                            cfg["sonarr"]["url"].rstrip("/") + url,
-                            headers={"X-Api-Key": cfg["sonarr"]["api_key"]},
+                            sonarr_url.rstrip("/") + url,
+                            headers={"X-Api-Key": sonarr_key},
                             timeout=10, follow_redirects=True,
                         )
                     elif url:
@@ -639,7 +728,7 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
         return users.list_safe() if users else []
 
     @app.post("/api/users", dependencies=[Depends(require_admin)])
-    def create_user(payload: dict):
+    def create_user(payload: dict, request: Request, current: str = Depends(require_auth)):
         if not users:
             raise HTTPException(503)
         username = payload.get("username", "").strip()
@@ -652,27 +741,42 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
         if role not in ROLES:
             raise HTTPException(400, f"role must be one of {ROLES}")
         users.upsert(username, password=password, role=role)
+        ip = request.client.host if request.client else "?"
+        audit.write(actor=current, ip=ip, action="user.create",
+                    target=username, role=role)
         return {"ok": True}
 
     @app.post("/api/users/{username}/password", dependencies=[Depends(require_auth)])
-    def change_password(username: str, payload: dict, current: str = Depends(require_auth)):
+    def change_password(username: str, payload: dict, request: Request,
+                        current: str = Depends(require_auth)):
         if not users:
             raise HTTPException(503)
+        ip = request.client.host if request.client else "?"
+        locked, secs = pw_throttle.is_locked(ip, current)
+        if locked:
+            raise HTTPException(429, f"too many attempts; try again in {secs//60+1}min")
         u = users.get(current)
         is_admin = u and u.get("role") == "admin"
         if not is_admin and current != username:
+            pw_throttle.record_failure(ip, current)
+            audit.write(actor=current, ip=ip, action="user.password_change",
+                        target=username, ok=False, detail="forbidden")
             raise HTTPException(403, "can only change your own password")
         new_pass = payload.get("password", "")
-        if not new_pass:
-            raise HTTPException(400, "password required")
+        if len(new_pass) < 8:
+            raise HTTPException(400, "password must be ≥ 8 chars")
         target = users.get(username)
         if not target:
             raise HTTPException(404)
         users.upsert(username, password=new_pass, role=target.get("role", "operator"))
+        pw_throttle.reset(ip, current)
+        audit.write(actor=current, ip=ip, action="user.password_change",
+                    target=username, ok=True)
         return {"ok": True}
 
     @app.post("/api/users/{username}/role", dependencies=[Depends(require_admin)])
-    def change_role(username: str, payload: dict):
+    def change_role(username: str, payload: dict, request: Request,
+                    current: str = Depends(require_auth)):
         if not users:
             raise HTTPException(503)
         role = payload.get("role")
@@ -682,16 +786,21 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
         if not target:
             raise HTTPException(404)
         users.upsert(username, role=role)
+        ip = request.client.host if request.client else "?"
+        audit.write(actor=current, ip=ip, action="user.role_change",
+                    target=username, role=role)
         return {"ok": True}
 
     @app.delete("/api/users/{username}", dependencies=[Depends(require_admin)])
-    def delete_user(username: str, current: str = Depends(require_auth)):
+    def delete_user(username: str, request: Request, current: str = Depends(require_auth)):
         if not users:
             raise HTTPException(503)
         if username == current:
             raise HTTPException(400, "cannot delete yourself")
         if not users.delete(username):
             raise HTTPException(404)
+        ip = request.client.host if request.client else "?"
+        audit.write(actor=current, ip=ip, action="user.delete", target=username)
         return {"ok": True}
 
     @app.get("/users", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
@@ -731,10 +840,18 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
         return settings.load() if settings else {}
 
     @app.post("/api/settings/{section}", dependencies=[Depends(require_operator)])
-    def update_settings(section: str, payload: dict):
+    def update_settings(section: str, payload: dict, request: Request,
+                        current: str = Depends(require_auth)):
         if not settings:
             raise HTTPException(503)
-        return settings.update(section, **payload)
+        out = settings.update(section, **payload)
+        ip = request.client.host if request.client else "?"
+        # avoid logging plaintext secrets
+        scrubbed = {k: ("***" if k in ("api_key", "token", "password", "webhook_secret") else v)
+                    for k, v in payload.items()}
+        audit.write(actor=current, ip=ip, action="settings.update",
+                    target=section, fields=scrubbed)
+        return out
 
     @app.get("/settings", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
     def settings_page(request: Request):
@@ -825,22 +942,40 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
         )
 
     @app.post("/api/users/me/password")
-    def change_my_password(payload: dict, current: str = Depends(require_auth)):
+    def change_my_password(payload: dict, request: Request,
+                           current: str = Depends(require_auth)):
         if not users or not users.load():
             raise HTTPException(503, "user store not active")
+        ip = request.client.host if request.client else "?"
+        locked, secs = pw_throttle.is_locked(ip, current)
+        if locked:
+            raise HTTPException(429, f"too many attempts; try again in {secs//60+1}min")
         cur_pass = payload.get("current_password", "")
         new_pass = payload.get("password", "")
         if not users.verify(current, cur_pass):
+            pw_throttle.record_failure(ip, current)
+            audit.write(actor=current, ip=ip, action="user.password_change",
+                        target=current, ok=False, detail="bad current password")
             raise HTTPException(401, "current password incorrect")
         if len(new_pass) < 8:
             raise HTTPException(400, "password must be ≥ 8 chars")
         target = users.get(current) or {}
         users.upsert(current, password=new_pass, role=target.get("role", "viewer"))
+        pw_throttle.reset(ip, current)
+        audit.write(actor=current, ip=ip, action="user.password_change",
+                    target=current, ok=True)
         return {"ok": True}
+
+    # ---------- audit ----------
+    @app.get("/api/audit", dependencies=[Depends(require_admin)])
+    def get_audit(limit: int = 200):
+        return audit.tail(n=max(1, min(limit, 2000)))
 
     # ---------- backup / restore ----------
     @app.get("/api/backup", dependencies=[Depends(require_admin)])
-    def backup_data():
+    def backup_data(request: Request, current: str = Depends(require_auth)):
+        ip = request.client.host if request.client else "?"
+        audit.write(actor=current, ip=ip, action="backup.download")
         """Stream a tar.gz of /data (excluding staging + caches). Admin only."""
         import io
         import tarfile

@@ -7,7 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.0] — 2026-04-30
+## [0.8.0] — 2026-04-30
+
+### Fixed
+- **`mux.py` was hardcoded to pt-BR**: filename suffix and audio-track strip now derived from the target `lang` arg via `_LANG_SUFFIX` map + `lang_matches`. Other target languages no longer mis-mux.
+- **Lossless mux when `delay_ms ≥ 0`**: switched from blanket ffmpeg re-encode to `mkvmerge --sync 0:N`. ffmpeg only used when negative delay requires PTS rewrite. Preserves original Crunchyroll audio bitrate.
+- **`probe.por_audio_indices` was hardcoded to "por"**: replaced with `audio_indices(path, lang)` that normalizes ISO 639-1/2 codes.
+- **Language code mismatch (`pt` vs `por` vs `pt-BR`)**: introduced `src/lang.py` with `normalize()` + `lang_matches()`. Wired into scanner + mux for cross-form comparison.
+- **`api._proxy_image` ignored settings overrides**: now routes through `_sonarr_creds()` so settings UI controls poster/fanart proxy too.
+- Dead `if False else None` artifact removed from `api.py`.
+
+### Security
+- **Rate-limit password change endpoints**: `/api/users/me/password` and `/api/users/{username}/password` now subject to a sliding-window lockout (5 failed attempts per 5 min → 15 min lockout, per IP+actor). Pairs with the existing login throttle.
+- **Audit log**: append-only JSONL at `/data/audit.log`. Records: login (success/fail), user create/delete/role-change, password changes, settings updates, backup downloads, manual sync overrides. Plaintext secrets (api_key/token/password/webhook_secret) are scrubbed before logging. Admin can read via `GET /api/audit`.
+- **Webhook payload size cap**: `/sonarr-webhook` rejects bodies over 256 KB before parsing (returns 413).
+- **CSRF token on `/login` form**: per-session token issued on GET, validated on POST. Token rotates on successful auth.
+
+### Added
+- **Manual sync override**: operator can set a manual delay (ms) on a quarantined job via `POST /api/jobs/{id}/manual-delay`. Worker re-mounts the job, skips cross-correlation, mux with the supplied delay. Queue UI exposes a `↹ ms` button on quarantined rows. Required schema migration → `manual_delay_ms` column on `jobs` (schema v3).
+- **ffprobe cache**: `probe.streams()` cached by `(path, mtime, size)` with 1h TTL + 5000-entry LRU. Speeds up large-library scans 10–100×. Bypassable via `no_cache=True`.
+- **Prometheus `/metrics`**: plain-text exposition endpoint. Surfaces: jobs per state, done counter + 24h gauge, avg sync delay/score, build version. Unauthenticated by design — bind behind a reverse proxy ACL if exposing publicly.
+
+### UI
+- **Show card title clamp** (Library + Shows pages): titles clamp to exactly 2 lines with ellipsis. PT progress bars and action buttons now align horizontally regardless of title length.
+- **Sidebar nav icons**: bumped 14 → 18px, brighter color, larger hit target (10px padding).
+- **Theme toggle button**: icon now properly centered (was off due to inline span baseline).
+
+[Unreleased]: https://github.com/luisesk/dubsmith/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/luisesk/dubsmith/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/luisesk/dubsmith/compare/v0.6.0...v0.7.0
 
 ### Added
 - Multi-source download support: Crunchyroll, Hidive, AnimationDigitalNetwork (ADN). Per-show `source` field in `shows.yml` selects which mdnx service to use; auth flow already covered all three.
@@ -38,6 +66,7 @@ Initial public release.
 - 44 unit tests across security, queue, users, settings, config, library_server, sync.
 - Multi-arch (linux/amd64, linux/arm64) Docker image published to GHCR via GitHub Actions on push to main and tagged releases.
 
-[Unreleased]: https://github.com/luisesk/dubsmith/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/luisesk/dubsmith/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/luisesk/dubsmith/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/luisesk/dubsmith/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/luisesk/dubsmith/releases/tag/v0.6.0
