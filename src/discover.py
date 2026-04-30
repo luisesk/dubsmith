@@ -6,6 +6,7 @@ data/discover.json so the UI returns instantly; a background refresh updates the
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import threading
@@ -58,14 +59,15 @@ def _probe_source_dubs(show_cfg: dict, target_lang: str) -> dict:
     """For a tracked show, probe each mapped season's source for the target dub.
 
     Returns: {available, with_lang: [season,...], without_lang: [season,...],
-              errors: [{season, error},...], source: 'crunchyroll'|'hidive'|'adn'}
+              errors: [{season, error},...], source: 'crunchyroll'|'hidive'|'adn',
+              matched_title: None, matched_id: None}
     """
     cr_seasons = (show_cfg or {}).get("cr_seasons") or {}
     source = (show_cfg or {}).get("source", "crunchyroll")
     out = {
         "available": False,
         "with_lang": [], "without_lang": [], "errors": [],
-        "source": source,
+        "source": source, "matched_title": None, "matched_id": None,
     }
     for season, cr_id in cr_seasons.items():
         try:
@@ -77,6 +79,40 @@ def _probe_source_dubs(show_cfg: dict, target_lang: str) -> dict:
             out["with_lang"].append(str(season))
         else:
             out["without_lang"].append(str(season))
+    out["available"] = bool(out["with_lang"])
+    return out
+
+
+def _search_untracked(title: str, target_lang: str,
+                      source: str = "crunchyroll") -> dict:
+    """For an untracked show, search the source by title and report dub availability
+    of the top match. Same shape as _probe_source_dubs, plus matched_* fields so
+    the user can verify (and the setup wizard can deep-link).
+    """
+    out = {
+        "available": False,
+        "with_lang": [], "without_lang": [], "errors": [],
+        "source": source, "matched_title": None, "matched_id": None,
+    }
+    if not title:
+        return out
+    try:
+        results = downloader.search_show(title, limit=1, source=source)
+    except Exception as e:
+        out["errors"].append({"season": "?", "error": str(e)[:200]})
+        return out
+    if not results:
+        return out
+    top = results[0]
+    out["matched_title"] = top.get("title")
+    out["matched_id"] = top.get("show_id")
+    for season in top.get("seasons") or []:
+        cr_id = season.get("cr_season_id")
+        langs = season.get("dub_langs") or []
+        if any(lang_matches(l, target_lang) for l in langs):
+            out["with_lang"].append(cr_id)
+        else:
+            out["without_lang"].append(cr_id)
     out["available"] = bool(out["with_lang"])
     return out
 
@@ -97,11 +133,13 @@ def _scan_one(series: dict, sonarr, target_lang: str,
         "has_target_in_first_ep": False,
         "probe_error": None,
         # source (CR/Hidive/ADN) availability
-        "source_available": None,         # bool | None (None = not probed, e.g. untracked)
+        "source_available": None,         # bool | None (None = not probed)
         "source_kind": None,              # 'crunchyroll'/'hidive'/'adn'
         "source_seasons_with_lang": [],
         "source_seasons_without_lang": [],
         "source_probe_errors": [],
+        "source_matched_title": None,     # untracked rows: source-side matched show title
+        "source_matched_id": None,        # untracked rows: source-side show id (for wizard)
     }
     try:
         files = sonarr.episode_files(sid)
@@ -126,26 +164,40 @@ def _scan_one(series: dict, sonarr, target_lang: str,
     row["first_ep_langs"] = langs
     row["has_target_in_first_ep"] = any(lang_matches(l, target_lang) for l in langs)
 
-    # If library is missing the dub AND show is tracked, probe its source for
-    # whether the dub is actually fetchable. Untracked rows we skip — the user
-    # has to set up CR mapping via the wizard first.
-    if not row["has_target_in_first_ep"] and row["tracked"] and show_cfg:
-        cr = _probe_source_dubs(show_cfg, target_lang)
+    # If library is missing the dub, probe the source.
+    #   - Tracked: walk cr_seasons via mdnx -s <id>.
+    #   - Untracked: mdnx --search <title>; take top match's first season's dubs.
+    if not row["has_target_in_first_ep"]:
+        if row["tracked"] and show_cfg:
+            cr = _probe_source_dubs(show_cfg, target_lang)
+        else:
+            cr = _search_untracked(row["title"], target_lang)
         row["source_available"] = cr["available"]
         row["source_kind"] = cr["source"]
         row["source_seasons_with_lang"] = cr["with_lang"]
         row["source_seasons_without_lang"] = cr["without_lang"]
         row["source_probe_errors"] = cr["errors"]
+        row["source_matched_title"] = cr.get("matched_title")
+        row["source_matched_id"] = cr.get("matched_id")
     return row
 
 
 def scan_all(sonarr, target_lang: str, path_remap: tuple[str, str],
              tracked_ids: set[int], data_dir: Path | str,
-             tracked_cfg: dict | None = None) -> dict:
+             tracked_cfg: dict | None = None,
+             max_workers: int = 4,
+             save_every: int = 25) -> dict:
     """Run a full library scan and persist results.
 
-    tracked_cfg: dict[series_id_int, show_yaml_entry]. Used to probe sources for
-    dub availability on tracked rows.
+    Probes ffprobe + source availability in parallel via ThreadPoolExecutor.
+    `max_workers` bounds simultaneous mdnx subprocesses (default 4 — friendly
+    to CR rate limits and leaves room for the worker pipeline).
+
+    Saves a partial payload every `save_every` rows so an interrupted scan
+    keeps progress.
+
+    tracked_cfg: dict[series_id_int_or_str, show_yaml_entry]. Used to probe
+    sources for dub availability on tracked rows.
     """
     if _RUNNING["value"]:
         log.info("discover.scan_all skipped: already running")
@@ -160,26 +212,63 @@ def scan_all(sonarr, target_lang: str, path_remap: tuple[str, str],
                 log.warning("discover: sonarr.all_series failed: %s", e)
                 series_list = []
             tracked_cfg = tracked_cfg or {}
-            rows = []
-            for s in series_list:
+
+            def _task(s):
                 sid = s["id"]
                 cfg = tracked_cfg.get(sid) or tracked_cfg.get(str(sid))
-                rows.append(_scan_one(s, sonarr, target_lang, path_remap,
-                                       tracked_ids, show_cfg=cfg))
+                return _scan_one(s, sonarr, target_lang, path_remap,
+                                 tracked_ids, show_cfg=cfg)
+
+            rows: list[dict] = []
+            done_count = 0
+            total = len(series_list)
+            workers = max(1, int(max_workers))
+            log.info("discover: starting scan of %d series with %d workers", total, workers)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers,
+                                                      thread_name_prefix="disc") as ex:
+                futures = {ex.submit(_task, s): s for s in series_list}
+                for fut in concurrent.futures.as_completed(futures):
+                    try:
+                        row = fut.result()
+                    except Exception as e:
+                        s = futures[fut]
+                        log.warning("discover: %s scan failed: %s", s.get("title"), e)
+                        row = {
+                            "series_id": s.get("id"),
+                            "title": s.get("title", ""),
+                            "tracked": s.get("id") in tracked_ids,
+                            "probe_error": f"scan crashed: {e}",
+                            "first_ep_langs": [], "has_target_in_first_ep": False,
+                            "source_available": None,
+                        }
+                    rows.append(row)
+                    done_count += 1
+                    if done_count % save_every == 0 or done_count == total:
+                        _save(data_dir, {
+                            "ts": time.time(),
+                            "started": started,
+                            "duration_s": round(time.time() - started, 1),
+                            "target_lang": target_lang,
+                            "progress": {"done": done_count, "total": total},
+                            "rows": rows,
+                        })
+
             payload = {
                 "ts": time.time(),
                 "started": started,
                 "duration_s": round(time.time() - started, 1),
                 "target_lang": target_lang,
+                "progress": {"done": done_count, "total": total},
                 "rows": rows,
             }
             _save(data_dir, payload)
             actionable = sum(1 for r in rows if r.get("source_available"))
-            log.info("discover: %d series in %.1fs · %d missing in lib · %d actionable on source · %d errors",
+            log.info("discover: %d series in %.1fs · %d missing in lib · %d actionable · %d errors",
                      len(rows), payload["duration_s"],
-                     sum(1 for r in rows if not r["has_target_in_first_ep"] and not r["probe_error"]),
+                     sum(1 for r in rows if not r["has_target_in_first_ep"] and not r.get("probe_error")),
                      actionable,
-                     sum(1 for r in rows if r["probe_error"]))
+                     sum(1 for r in rows if r.get("probe_error")))
             payload["running"] = False
             return payload
         finally:
@@ -187,12 +276,13 @@ def scan_all(sonarr, target_lang: str, path_remap: tuple[str, str],
 
 
 def scan_in_background(sonarr, target_lang: str, path_remap, tracked_ids,
-                        data_dir, tracked_cfg=None) -> bool:
+                        data_dir, tracked_cfg=None, max_workers: int = 4) -> bool:
     if _RUNNING["value"]:
         return False
     threading.Thread(
         target=scan_all,
-        args=(sonarr, target_lang, path_remap, tracked_ids, data_dir, tracked_cfg),
+        args=(sonarr, target_lang, path_remap, tracked_ids, data_dir,
+              tracked_cfg, max_workers),
         daemon=True, name="discover-scan",
     ).start()
     return True

@@ -113,7 +113,7 @@
           data-bucket="{{ bucket }}"
           data-title="{{ r.title|lower }}">
         <td><input type="checkbox" class="row-cb" onchange="updateSel()"
-          {% if not (r.tracked and src_state == 'available') %}disabled title="not actionable — needs setup or source missing dub"{% endif %}></td>
+          {% if not (r.tracked and src_state == 'available') %}disabled title="bulk scan only enqueues tracked actionable rows — untracked need setup wizard"{% endif %}></td>
         <td>
           <div style="display:flex;align-items:center;gap:10px;">
             <img src="/api/poster/{{ r.series_id }}.jpg" loading="lazy" alt=""
@@ -138,13 +138,16 @@
           {% endif %}
         </td>
         <td>
-          {% if not r.tracked %}
-            <span class="state-pill" style="background:var(--af-bg-input);color:var(--af-text-mute);">untracked</span>
-          {% elif src_state == 'available' %}
-            <span class="state-pill state-done">on {{ r.source_kind }}</span>
-            {% if r.source_seasons_with_lang %}<span style="font-family:var(--af-font-mono);font-size:10px;color:var(--af-text-mute);">S{{ r.source_seasons_with_lang|join(',S') }}</span>{% endif %}
+          {% if src_state == 'available' %}
+            <span class="state-pill state-done">on {{ r.source_kind or 'CR' }}</span>
+            {% if r.source_matched_title and not r.tracked %}
+              <div style="font-size:10px;color:var(--af-text-mute);font-family:var(--af-font-mono);margin-top:2px;">match: {{ r.source_matched_title }}</div>
+            {% endif %}
           {% elif src_state == 'unavailable' %}
             <span class="state-pill state-quarantined" title="source has the show but no {{ target_lang }} dub">no dub</span>
+            {% if r.source_matched_title and not r.tracked %}
+              <div style="font-size:10px;color:var(--af-text-mute);font-family:var(--af-font-mono);margin-top:2px;">match: {{ r.source_matched_title }}</div>
+            {% endif %}
           {% elif src_state == 'src_error' %}
             <span class="state-pill state-failed" title="{{ r.source_probe_errors }}">probe err</span>
           {% else %}
@@ -254,11 +257,14 @@ async function pollScan() {
   const d = await r.json();
   if (d.running) {
     setScanning(true);
+    if (d.progress && d.progress.total) {
+      document.getElementById('scan-status').textContent =
+        `scanning… ${d.progress.done}/${d.progress.total}`;
+    }
     setTimeout(pollScan, 2000);
     return;
   }
   setScanning(false);
-  // First completion after we entered scanning mode → reload to show fresh rows.
   if (window.__scanWasRunning) softReload();
 }
 

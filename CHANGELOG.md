@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-04-30
+
+### Added
+- **Untracked shows now get source-probed too**: discover scan calls `aniDL --service crunchy --search <title>` for every untracked Sonarr series missing the dub locally, parses the top match, reports availability. Lets you spot shows worth setting up that you don't even track yet.
+- Untracked rows show the matched CR title (so you can verify the auto-match before clicking ⚙ setup).
+- **Parallel scan via ThreadPoolExecutor** with default 4 workers. Tunable via `scheduler.discover_workers` in `config.yml`. Bounded to keep CR rate-limit happy and leave room for the worker pipeline.
+- **Incremental save** every 25 rows: interrupted scans (container restart, tab close) keep their partial cache.
+- **Live progress** ("scanning… 47/351") via new `progress.done/total` field on `/api/discover`.
+
+### Notes on safety
+- Discover probes are read-only mdnx calls; they don't write `dir-path.yml` like the worker pipeline does. The boot lock that protects worker mdnx config is unaffected by parallel discover probes.
+- Each ThreadPoolExecutor worker spawns its own subprocess; mdnx subprocesses are independent. Concurrent token refreshes are mdnx-internal and use file locks.
+
+[0.10.1]: https://github.com/luisesk/dubsmith/compare/v0.10.0...v0.10.1
+
 ## [0.10.0] — 2026-04-30
 
 ### Changed

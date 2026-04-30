@@ -189,6 +189,71 @@ def test_scan_one_skips_source_probe_when_lib_already_has(monkeypatch, tmp_path)
     assert called == []  # never called
 
 
+def test_search_untracked_marks_available(monkeypatch):
+    def fake_search(q, limit=1, source="crunchyroll"):
+        return [{"show_id": "Z", "title": "Foo Bar",
+                 "seasons": [{"cr_season_id": "GS1", "name": "S1",
+                              "dub_langs": ["en", "pt-BR"]}]}]
+    monkeypatch.setattr(discover.downloader, "search_show", fake_search)
+    out = discover._search_untracked("Foo", "por")
+    assert out["available"] is True
+    assert out["matched_id"] == "Z"
+    assert out["matched_title"] == "Foo Bar"
+    assert "GS1" in out["with_lang"]
+
+
+def test_search_untracked_no_results(monkeypatch):
+    monkeypatch.setattr(discover.downloader, "search_show",
+                        lambda q, limit=1, source="crunchyroll": [])
+    out = discover._search_untracked("Nope", "por")
+    assert out["available"] is False
+    assert out["matched_id"] is None
+
+
+def test_search_untracked_handles_exception(monkeypatch):
+    monkeypatch.setattr(discover.downloader, "search_show",
+                        lambda q, limit=1, source="crunchyroll": (_ for _ in ()).throw(RuntimeError("net")))
+    out = discover._search_untracked("X", "por")
+    assert out["available"] is False
+    assert out["errors"][0]["error"] == "net"
+
+
+def test_scan_one_searches_untracked_when_lib_missing(monkeypatch, tmp_path):
+    f = tmp_path / "ep.mkv"; f.write_bytes(b"x")
+    sonarr = MagicMock()
+    sonarr.episode_files.return_value = [{"path": str(f)}]
+    series = {"id": 7, "title": "Slime"}
+
+    monkeypatch.setattr(discover.probe, "audio_languages", lambda p: ["jpn"])
+    called = []
+
+    def fake_search(q, limit=1, source="crunchyroll"):
+        called.append(q)
+        return [{"show_id": "QQ", "title": "Slime CR",
+                 "seasons": [{"cr_season_id": "S1", "dub_langs": ["pt-BR"]}]}]
+
+    monkeypatch.setattr(discover.downloader, "search_show", fake_search)
+    row = discover._scan_one(series, sonarr, "por", ("", ""), tracked_ids=set())
+    assert called == ["Slime"]
+    assert row["source_available"] is True
+    assert row["source_matched_title"] == "Slime CR"
+    assert row["source_matched_id"] == "QQ"
+
+
+def test_scan_all_uses_thread_pool(tmp_path, monkeypatch):
+    """Hit ThreadPoolExecutor path. Verify all rows persist."""
+    sonarr = MagicMock()
+    sonarr.all_series.return_value = [{"id": i, "title": f"T{i}"} for i in range(8)]
+    sonarr.episode_files.return_value = []
+    out = discover.scan_all(sonarr, "por", ("", ""), set(), tmp_path,
+                             max_workers=4, save_every=3)
+    assert len(out["rows"]) == 8
+    cache = json.loads((tmp_path / "discover.json").read_text())
+    assert len(cache["rows"]) == 8
+    assert cache["progress"]["done"] == 8
+    assert cache["progress"]["total"] == 8
+
+
 def test_summary_counts_actionable_bucket():
     rows = [
         {"probe_error": None, "has_target_in_first_ep": False, "tracked": True,

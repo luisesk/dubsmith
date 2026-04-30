@@ -938,11 +938,11 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
         target_lang = cfg["target_language"]["audio"]
         tracked_raw = shows.load()
         tracked_ids = set(int(k) for k in tracked_raw.keys())
-        # int-keyed lookup for the per-show source probe
         tracked_cfg = {int(k): v for k, v in tracked_raw.items()}
+        max_workers = int(cfg.get("scheduler", {}).get("discover_workers", 4))
         started = _disc.scan_in_background(
             _sonarr(), target_lang, path_remap, tracked_ids, config.data_dir(),
-            tracked_cfg=tracked_cfg,
+            tracked_cfg=tracked_cfg, max_workers=max_workers,
         )
         return {"started": started, "already_running": not started}
 
