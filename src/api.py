@@ -922,6 +922,84 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
             return "(log buffer not initialized)"
         return "\n".join(ring.tail(n=lines, level=level)) or "(no entries)"
 
+    # ---------- discover (library-wide audio coverage scanner) ----------
+    @app.get("/api/discover", dependencies=[Depends(require_auth)])
+    def get_discover():
+        from . import discover as _disc
+        return _disc.load(config.data_dir())
+
+    @app.post("/api/discover/scan", dependencies=[Depends(require_operator)])
+    def trigger_discover_scan():
+        from . import discover as _disc
+        path_remap = (
+            (cfg.get("paths_extra") or {}).get("sonarr_prefix", "/downloads"),
+            cfg["paths"]["library_in_container"],
+        )
+        target_lang = cfg["target_language"]["audio"]
+        tracked_ids = set(int(k) for k in shows.load().keys())
+        started = _disc.scan_in_background(
+            _sonarr(), target_lang, path_remap, tracked_ids, config.data_dir(),
+        )
+        return {"started": started, "already_running": not started}
+
+    @app.post("/api/discover/bulk-scan", dependencies=[Depends(require_operator)])
+    def discover_bulk_scan(payload: dict, request: Request, current: str = Depends(require_auth)):
+        """Trigger /scan for a list of tracked series_ids. Returns per-series counts."""
+        ids = payload.get("series_ids") or []
+        if not isinstance(ids, list):
+            raise HTTPException(400, "series_ids must be a list")
+        results: list[dict] = []
+        sonarr = _sonarr()
+        sonarr_prefix = (cfg.get("paths_extra") or {}).get("sonarr_prefix", "/downloads")
+        default_lang = cfg["target_language"]["audio"]
+        tracked = shows.load()
+        for sid in ids:
+            try:
+                sid_int = int(sid)
+            except (TypeError, ValueError):
+                results.append({"series_id": sid, "error": "invalid id"})
+                continue
+            sh = tracked.get(sid_int) or tracked.get(str(sid_int))
+            if not sh:
+                results.append({"series_id": sid_int, "error": "not tracked"})
+                continue
+            cr_seasons = sh.get("cr_seasons") or {}
+            target_lang = sh.get("target_audio") or default_lang
+            try:
+                missing = scanner.find_missing(
+                    sonarr, sid_int, target_lang,
+                    path_remap=(sonarr_prefix, cfg["paths"]["library_in_container"]),
+                )
+            except Exception as e:
+                results.append({"series_id": sid_int, "error": str(e)[:200]})
+                continue
+            n = 0; skipped = 0
+            for m in missing:
+                if str(m.season) not in cr_seasons:
+                    skipped += 1
+                    continue
+                queue.upsert_pending(m.series_id, m.season, m.episode, m.target_path)
+                n += 1
+            results.append({"series_id": sid_int, "enqueued": n, "skipped": skipped})
+        ip = request.client.host if request and request.client else "?"
+        audit.write(actor=current, ip=ip, action="discover.bulk_scan",
+                    count=len(ids), results=len(results))
+        return {"results": results}
+
+    @app.get("/discover", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
+    def discover_page(request: Request):
+        from . import discover as _disc
+        d = _disc.load(config.data_dir())
+        target_lang = cfg["target_language"]["audio"]
+        return templates.TemplateResponse(
+            request=request, name="discover.html",
+            context={
+                "data": d,
+                "target_lang": target_lang,
+                "summary": _disc.summary_counts(d.get("rows", [])),
+            },
+        )
+
     @app.get("/queue-page", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
     def queue_page(request: Request, state: str | None = None):
         jobs = queue.list(state=state, limit=200)

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-04-30
+
+### Added
+- **Discover page** (`/discover`): library-wide audio coverage scanner.
+  - Walks every Sonarr series, ffprobes one sample episode per show, classifies as `has dub` / `missing dub` / `error`. Cross-form lang matching (`pt`/`por`/`pt-BR`).
+  - Filter chips: Missing dub (default), All, Has dub, Tracked only, Untracked only, Probe errors. Plus title search.
+  - Multi-select rows + bulk actions: **Scan selected (tracked)** kicks off the existing per-series scan for each picked tracked show, enqueues all missing eps for which a CR mapping exists. Untracked shows route to the existing setup wizard via the row's "⚙ setup" link.
+  - **Scan now** button kicks a background scan thread; progress polls every 2s. Results persist to `data/discover.json` so reloads are instant.
+  - Stats cards: total / missing / has dub / tracked-vs-untracked + probe errors.
+- API: `GET /api/discover` (cached results), `POST /api/discover/scan` (operator), `POST /api/discover/bulk-scan` (operator) with audited bulk enqueue.
+- Sidebar nav gets a Discover entry.
+- Tests: +9 cases (classification + cache + cross-form lang). 89 total.
+
+[0.9.0]: https://github.com/luisesk/dubsmith/compare/v0.8.5...v0.9.0
+
 ## [0.8.5] — 2026-04-30
 
 ### Fixed

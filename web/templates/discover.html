@@ -1,0 +1,255 @@
+{% extends "base.html" %}
+{% set active = "discover" %}
+{% set page_title = "Discover" %}
+{% block title %}Dubsmith · discover{% endblock %}
+{% block body %}
+
+<div class="page-header">
+  <div>
+    <div class="page-eyebrow">library audit</div>
+    <h1 class="page-title">Discover</h1>
+    <div style="color:var(--af-text-mute);margin-top:4px;font-size:13px;">
+      Scans every Sonarr series, ffprobes one episode per show, and flags shows missing
+      <code>{{ target_lang }}</code> audio. Pick the ones you want and bulk-enqueue.
+    </div>
+  </div>
+  <div class="page-actions">
+    <span id="scan-status" style="font-size:11px;color:var(--af-text-mute);font-family:var(--af-font-mono);"></span>
+    <button class="btn primary" onclick="triggerScan()" id="scan-btn">Scan now</button>
+  </div>
+</div>
+
+<div class="stats-grid">
+  <div class="stat-card info">
+    <div class="stat-label">Series in Sonarr</div>
+    <div class="stat-value" id="cnt-total">{{ summary.total }}</div>
+    <div class="stat-sub">scanned {{ data.duration_s or 0 }}s</div>
+  </div>
+  <div class="stat-card warn">
+    <div class="stat-label">Missing dub</div>
+    <div class="stat-value" id="cnt-missing">{{ summary.missing }}</div>
+    <div class="stat-sub">eligible for setup or scan</div>
+  </div>
+  <div class="stat-card success">
+    <div class="stat-label">Already have dub</div>
+    <div class="stat-value" id="cnt-complete">{{ summary.complete }}</div>
+    <div class="stat-sub">first ep contains {{ target_lang }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Tracked / untracked</div>
+    <div class="stat-value">{{ summary.tracked }} / {{ summary.untracked }}</div>
+    <div class="stat-sub">{{ summary.errors }} probe error{{ 's' if summary.errors != 1 else '' }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div class="card-title">Filter</div>
+    <span class="card-action" id="last-ts">
+      {% if data.ts %}last scan: <span data-ts="{{ data.ts }}"></span>{% else %}never scanned — click <b>Scan now</b>{% endif %}
+    </span>
+  </div>
+  <div class="card-body">
+    <div class="chip-row">
+      <button class="chip active" data-f="missing" onclick="filterRows(this)">Missing dub</button>
+      <button class="chip" data-f="all" onclick="filterRows(this)">All</button>
+      <button class="chip" data-f="complete" onclick="filterRows(this)">Has dub</button>
+      <button class="chip" data-f="tracked" onclick="filterRows(this)">Tracked only</button>
+      <button class="chip" data-f="untracked" onclick="filterRows(this)">Untracked only</button>
+      <button class="chip" data-f="errors" onclick="filterRows(this)">Probe errors</button>
+    </div>
+    <div style="margin-top:10px;">
+      <input id="search" type="text" placeholder="filter by title…"
+        oninput="filterRows()" autocomplete="off"
+        style="width:100%;background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:8px;padding:8px 12px;color:var(--af-text);font-size:13px;">
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div class="card-title">
+      Selected: <span id="sel-count">0</span>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn" onclick="selectAll()">select all visible</button>
+      <button class="btn ghost" onclick="clearSel()">clear</button>
+      <button class="btn primary" onclick="bulkScan()" id="bulk-scan-btn" disabled>▶ Scan selected (tracked)</button>
+    </div>
+  </div>
+  <div class="card-body" style="padding:0;">
+    <table id="discover-tbl">
+      <thead>
+        <tr>
+          <th style="width:36px;"><input type="checkbox" onchange="toggleAll(this)"></th>
+          <th>Title</th>
+          <th>Eps</th>
+          <th>First ep langs</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="rows">
+      {% for r in data.rows %}
+      <tr data-sid="{{ r.series_id }}"
+          data-tracked="{{ '1' if r.tracked else '0' }}"
+          data-has="{{ '1' if r.has_target_in_first_ep else '0' }}"
+          data-error="{{ '1' if r.probe_error else '0' }}"
+          data-title="{{ r.title|lower }}">
+        <td><input type="checkbox" class="row-cb" onchange="updateSel()"></td>
+        <td>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <img src="/api/poster/{{ r.series_id }}.jpg" loading="lazy" alt=""
+              style="width:34px;height:50px;object-fit:cover;border-radius:4px;background:var(--af-bg-input);"
+              onerror="this.style.visibility='hidden';">
+            <div>
+              <div style="font-weight:600;font-size:13px;">{{ r.title }}{% if r.year %} <span style="color:var(--af-text-mute);font-weight:400;">({{ r.year }})</span>{% endif %}</div>
+              <div style="font-size:11px;color:var(--af-text-mute);font-family:var(--af-font-mono);">id {{ r.series_id }}{% if r.tracked %} · tracked{% endif %}{% if r.monitored %}{% else %} · unmonitored{% endif %}</div>
+            </div>
+          </div>
+        </td>
+        <td>{{ r.total_eps }}</td>
+        <td style="font-family:var(--af-font-mono);font-size:11px;">
+          {% if r.first_ep_langs %}{{ r.first_ep_langs|join(', ') }}{% else %}—{% endif %}
+        </td>
+        <td>
+          {% if r.probe_error %}
+            <span class="state-pill state-failed" title="{{ r.probe_error }}">error</span>
+          {% elif r.has_target_in_first_ep %}
+            <span class="state-pill state-done">{{ target_lang }}</span>
+          {% else %}
+            <span class="state-pill state-quarantined">missing</span>
+          {% endif %}
+        </td>
+        <td style="white-space:nowrap;">
+          {% if r.tracked %}
+          <button class="btn sm ghost" onclick="scanOne({{ r.series_id }})" title="scan now">▶ scan</button>
+          {% else %}
+          <a class="btn sm ghost" href="/shows/add/{{ r.series_id }}" title="set up CR mapping">⚙ setup</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% if not data.rows %}
+    <div style="padding:30px;text-align:center;color:var(--af-text-mute);">
+      No scan results yet. Click <b>Scan now</b> to probe your library.
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+const TARGET_LANG = {{ target_lang|tojson }};
+
+// Default filter: missing
+let activeFilter = 'missing';
+filterRows(document.querySelector('.chip.active'));
+
+function filterRows(btn) {
+  if (btn) {
+    activeFilter = btn.dataset.f;
+    btn.parentElement.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+  }
+  const q = (document.getElementById('search').value || '').toLowerCase().trim();
+  let shown = 0;
+  document.querySelectorAll('#rows tr').forEach(tr => {
+    const tracked = tr.dataset.tracked === '1';
+    const has = tr.dataset.has === '1';
+    const err = tr.dataset.error === '1';
+    let show = true;
+    if (activeFilter === 'missing')   show = !has && !err;
+    else if (activeFilter === 'complete') show = has;
+    else if (activeFilter === 'tracked')  show = tracked;
+    else if (activeFilter === 'untracked') show = !tracked;
+    else if (activeFilter === 'errors')  show = err;
+    if (show && q && !(tr.dataset.title || '').includes(q)) show = false;
+    tr.style.display = show ? '' : 'none';
+    if (show) shown++;
+  });
+}
+
+function updateSel() {
+  const n = document.querySelectorAll('#rows .row-cb:checked').length;
+  document.getElementById('sel-count').textContent = n;
+  document.getElementById('bulk-scan-btn').disabled = n === 0;
+}
+
+function selectAll() {
+  document.querySelectorAll('#rows tr').forEach(tr => {
+    if (tr.style.display !== 'none') {
+      const cb = tr.querySelector('.row-cb'); if (cb) cb.checked = true;
+    }
+  });
+  updateSel();
+}
+function clearSel() {
+  document.querySelectorAll('#rows .row-cb').forEach(cb => cb.checked = false);
+  updateSel();
+}
+function toggleAll(master) {
+  document.querySelectorAll('#rows tr').forEach(tr => {
+    if (tr.style.display !== 'none') {
+      const cb = tr.querySelector('.row-cb'); if (cb) cb.checked = master.checked;
+    }
+  });
+  updateSel();
+}
+
+async function triggerScan() {
+  const btn = document.getElementById('scan-btn');
+  btn.disabled = true; btn.textContent = 'Scanning…';
+  document.getElementById('scan-status').textContent = 'kicking off scan…';
+  const r = await fetch('/api/discover/scan', {method:'POST', credentials:'same-origin'});
+  if (!r.ok) { toast('scan failed: ' + await r.text(), 'err'); btn.disabled = false; btn.textContent = 'Scan now'; return; }
+  pollScan();
+}
+
+async function pollScan() {
+  const r = await fetch('/api/discover', {credentials:'same-origin'});
+  if (!r.ok) return;
+  const d = await r.json();
+  document.getElementById('scan-status').textContent = d.running ? 'scanning library…' : 'done';
+  if (d.running) { setTimeout(pollScan, 2000); return; }
+  // reload page to render new rows
+  softReload();
+}
+
+async function scanOne(sid) {
+  const r = await fetch('/scan/' + sid, {method:'POST', credentials:'same-origin'});
+  if (r.ok) toast('scan triggered · ' + sid);
+  else toast('failed', 'err');
+}
+
+async function bulkScan() {
+  const ids = [];
+  document.querySelectorAll('#rows .row-cb:checked').forEach(cb => {
+    const tr = cb.closest('tr');
+    if (tr.dataset.tracked === '1') ids.push(parseInt(tr.dataset.sid, 10));
+  });
+  if (!ids.length) {
+    toast('no tracked shows selected — set up untracked ones first via the wizard', 'err');
+    return;
+  }
+  const btn = document.getElementById('bulk-scan-btn');
+  btn.disabled = true; btn.textContent = 'Scanning ' + ids.length + '…';
+  const r = await fetch('/api/discover/bulk-scan', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({series_ids: ids}), credentials:'same-origin',
+  });
+  if (!r.ok) { toast(await r.text(), 'err'); btn.disabled = false; btn.textContent = '▶ Scan selected (tracked)'; return; }
+  const d = await r.json();
+  const n = (d.results || []).reduce((sum, x) => sum + (x.enqueued || 0), 0);
+  toast(`enqueued ${n} ep${n===1?'':'s'} across ${ids.length} show${ids.length===1?'':'s'}`);
+  btn.disabled = false; btn.textContent = '▶ Scan selected (tracked)';
+}
+
+// Render last-scan ts to local time
+document.querySelectorAll('[data-ts]').forEach(el => {
+  const t = parseFloat(el.dataset.ts) * 1000;
+  if (t) el.textContent = new Date(t).toLocaleString();
+});
+</script>
+{% endblock %}
