@@ -439,10 +439,85 @@ code { font-family: var(--af-font-mono); font-size: .9em; }
   .stats-grid { grid-template-columns: 1fr 1fr; }
   table { font-size: 12px; }
   .page-title { font-size: 22px !important; }
+  .page { padding: 14px !important; }
+
+  /* Force ALL inline grid-template-columns to single column on mobile.
+     Inline styles normally win, so use !important. Targets the top-level
+     2-3 col layouts on dashboard/queue/library/show-detail without us
+     having to refactor the templates. */
+  .page > div[style*="grid-template-columns"],
+  .page div[style*="grid-template-columns"]:not(.card-head):not(.show-info):not(.cov-row) {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Library / Shows poster grid: 2 columns up to ~600px, then auto-fill */
+  .show-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 10px !important;
+  }
+
+  /* Page header: title + action buttons stack instead of overflow */
+  .page-header {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 10px !important;
+  }
+  .page-actions {
+    margin-left: 0 !important;
+    flex-wrap: wrap;
+  }
+
+  /* Shows table: hide stats column + tighten font; wrap action buttons */
+  table th:nth-child(5), table td:nth-child(5) { display: none; }
+  table { table-layout: auto; }
+  table td, table th { padding: 8px 6px !important; }
+
+  /* Settings form rows: 120px-label + 1fr-input grids stack vertically.
+     The selector matches `display:grid` rows that have a fixed left col. */
+  .card-body div[style*="grid-template-columns:120px"],
+  .card-body div[style*="grid-template-columns: 120px"] {
+    grid-template-columns: 1fr !important;
+    gap: 6px !important;
+  }
+  /* "label / 1fr / save-btn" 3-col -> stack with btn full-width */
+  .card-body div[style*="grid-template-columns:120px 1fr auto"],
+  .card-body div[style*="grid-template-columns: 120px 1fr auto"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Source row in settings: avatar + name + actions wrap */
+  .card-body > div[style*="display:flex"][style*="align-items:center"] {
+    flex-wrap: wrap;
+    gap: 10px !important;
+  }
+
+  /* Card padding tighten */
+  .card { padding: 12px !important; }
+  .card-head { padding-bottom: 10px; margin-bottom: 8px; }
+  .card-title { font-size: 14px !important; }
+
+  /* Job-row (queue page) avoid avatar + meta squashing */
+  [data-jobid] { padding: 10px !important; }
+
+  /* Topbar: hide live pill on small screens (already in <480 below) */
+  .live-pill { font-size: 10.5px; padding: 4px 8px; }
 }
+
 @media (max-width: 480px) {
   .stats-grid { grid-template-columns: 1fr; }
   .live-pill { display: none; }
+  .show-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 8px !important; }
+  .page-title { font-size: 19px !important; }
+  /* Hide CR seasons column on tiny screens too */
+  table th:nth-child(3), table td:nth-child(3) { display: none; }
+}
+
+/* Fix dropdowns from overflowing viewport on mobile */
+@media (max-width: 540px) {
+  .alert-dropdown {
+    width: calc(100vw - 24px); right: -8px; max-width: 360px;
+  }
+  .user-dropdown { width: 200px; }
 }
 
 /* Mobile / responsive: collapse sidebar to slide-over below 768px */

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4] — 2026-04-30
+
+### Fixed
+- **Mobile layout** (≤768px) across all pages, no desktop changes:
+  - Side-by-side card grids (dashboard "Now muxing" + "Recent activity", queue jobs + log) now stack vertically.
+  - Library + Shows poster grids switch to **2 columns** instead of full-width single column.
+  - Page headers stack title + action buttons; no more horizontal overflow.
+  - Settings form rows (label + input + save button) stack with label above input.
+  - Shows table hides STATS column ≤768px and CR SEASONS column ≤480px to fit narrow screens.
+  - Alert + user dropdowns sized to viewport width (no clipping).
+  - Tighter card + page padding on mobile.
+
+[0.8.4]: https://github.com/luisesk/dubsmith/compare/v0.8.3...v0.8.4
+
 ## [0.8.3] — 2026-04-30
 
 ### Removed
