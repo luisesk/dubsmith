@@ -1,5 +1,6 @@
 """Pipeline worker: process one queued job end-to-end."""
 import logging
+from pathlib import Path
 
 from . import health, mux, notify, probe, staging, sync
 from .downloader import MdnxDownloader
@@ -39,6 +40,18 @@ class Worker:
             self.queue.set_state(job.id, "failed", last_error=f"no cr_seasons mapping for S{job.season}")
             return
         cr_ep = job.episode + season_offset.get(str(job.season), 0)
+
+        # Pre-flight: target file must exist inside the container before we burn
+        # bandwidth on a 1+ GB mdnx download. Catches path-remap misconfigs
+        # (sonarr_prefix vs library_in_container drift) early with a clear msg.
+        if not Path(job.target_path).exists():
+            self.queue.set_state(
+                job.id, "failed",
+                last_error=(f"target file not found: {job.target_path} — check "
+                            f"paths.library_in_container vs paths_extra.sonarr_prefix "
+                            f"in config.yml"),
+            )
+            return
 
         log.info("=== job %d: S%02dE%02d -> CR season %s ep %d ===",
                  job.id, job.season, job.episode, cr_season_id, cr_ep)

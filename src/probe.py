@@ -31,9 +31,16 @@ def streams(path: str, no_cache: bool = False) -> list[dict]:
                 return v[1]
     r = subprocess.run(
         ["ffprobe", "-v", "error", "-show_streams", "-of", "json", path],
-        check=True, capture_output=True, text=True,
+        capture_output=True, text=True,
     )
-    out = json.loads(r.stdout).get("streams", [])
+    if r.returncode != 0:
+        # Surface the actual ffprobe error instead of "non-zero exit status 1"
+        err = (r.stderr or "").strip().splitlines()[-1] if r.stderr else "unknown"
+        raise RuntimeError(f"ffprobe failed on {path!r}: {err[:240]}")
+    try:
+        out = json.loads(r.stdout).get("streams", [])
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"ffprobe produced invalid JSON for {path!r}: {e}")
     if key:
         with _CACHE_LOCK:
             if len(_CACHE) >= _CACHE_MAX:

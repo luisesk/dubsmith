@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] — 2026-04-30
+
+### Fixed
+- **Worker burned bandwidth on doomed jobs**: when path remap was misconfigured (`paths_extra.sonarr_prefix` vs `paths.library_in_container` drift), the worker would download 1+ GB from CR before sync ran ffprobe on a non-existent target and failed with a generic error. Worker now does a pre-flight `Path(job.target_path).exists()` check and fails fast with a clear remap-hint message — saving the round trip.
+- **Opaque ffprobe errors**: probe.streams() was using `check=True` which raised `CalledProcessError` whose `__str__` is just `"non-zero exit status 1"`. Now captures stderr explicitly and raises `RuntimeError(f"ffprobe failed on <path>: <last stderr line>")`. Same for invalid-JSON output.
+
+[0.8.5]: https://github.com/luisesk/dubsmith/compare/v0.8.4...v0.8.5
+
 ## [0.8.4] — 2026-04-30
 
 ### Fixed

@@ -7,7 +7,9 @@ from src import probe
 
 def _fake_run(*args, **kwargs):
     class R:
+        returncode = 0
         stdout = '{"streams":[{"codec_type":"audio","tags":{"language":"jpn"},"index":1}]}'
+        stderr = ""
     return R()
 
 
