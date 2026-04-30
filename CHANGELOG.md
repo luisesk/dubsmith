@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-04-30
+
+### Fixed
+- **Staging dir leak**: worker only `unlink()`-ed the muxed `.mkv` — mdnx leaves dozens of `temp-*.m4s`, fonts, .nfo, and .mp4 fragments per episode. Failed/quarantined jobs left everything. Sandbox staging had grown to 5.7 GB. Now `staging.clean_episode` rmtrees the entire per-episode dir on every terminal state (done, failed, quarantined) and prunes empty parent dirs (S## and CR-id).
+
+### Added
+- **Startup janitor**: on daemon boot, sweep episode dirs older than `scheduler.staging_max_age_days` (default 7). Re-runs every `scheduler.janitor_interval_hours` (default 12). Protects against crash-orphaned dirs.
+- **`GET /api/staging`**: reports `bytes` + `episode_dirs` count for monitoring.
+- **`POST /api/staging/sweep`** (admin): manually purge episode dirs older than supplied `max_age_days` (0 = nuke all). Audited.
+
+[0.8.2]: https://github.com/luisesk/dubsmith/compare/v0.8.1...v0.8.2
+
 ## [0.8.1] — 2026-04-30
 
 ### Changed

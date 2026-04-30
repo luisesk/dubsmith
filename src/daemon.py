@@ -6,7 +6,7 @@ import time
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import config, logbuf, scanner
+from . import config, logbuf, scanner, staging
 from .api import make_app
 from .queue import Queue
 from .settings_store import SettingsStore
@@ -120,6 +120,19 @@ def run() -> None:
             daemon=True, name=f"worker-{i+1}",
         ).start()
 
+    # Startup janitor: nuke episode dirs older than 7 days (or what config says)
+    staging_root = cfg["paths"]["staging"]
+    janitor_age_days = float(cfg.get("scheduler", {}).get("staging_max_age_days", 7))
+    try:
+        n = staging.sweep_old(staging_root, max_age_days=janitor_age_days)
+        if n:
+            log.info("startup janitor: removed %d stale staging dirs (>%.1fd)", n, janitor_age_days)
+        usage = staging.staging_disk_usage(staging_root)
+        log.info("staging usage: %.1f MB across %d episode dirs",
+                 usage["bytes"] / 1024 / 1024, usage["episode_dirs"])
+    except Exception as e:
+        log.warning("startup janitor failed: %s", e)
+
     sched = BackgroundScheduler(daemon=True)
     sched.add_job(
         lambda: _scan_all(cfg, queue, shows),
@@ -131,6 +144,12 @@ def run() -> None:
         lambda: _retry_failed(queue, cfg.get("scheduler", {}).get("max_attempts", 3)),
         "interval",
         hours=cfg.get("scheduler", {}).get("retry_interval_hours", 1),
+        next_run_time=None,
+    )
+    sched.add_job(
+        lambda: staging.sweep_old(staging_root, max_age_days=janitor_age_days),
+        "interval",
+        hours=cfg.get("scheduler", {}).get("janitor_interval_hours", 12),
         next_run_time=None,
     )
     sched.start()

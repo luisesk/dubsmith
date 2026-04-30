@@ -1,7 +1,7 @@
 """Pipeline worker: process one queued job end-to-end."""
 import logging
 
-from . import mux, notify, probe, sync
+from . import mux, notify, probe, staging, sync
 from .downloader import MdnxDownloader
 from .queue import Job, Queue
 from .shows import ShowsStore
@@ -61,11 +61,19 @@ class Worker:
             self.queue.update_progress(job.id, progress=pct, phase=phase,
                                        bytes_done=bd, bytes_total=bt)
 
+        staging_root = cfg["paths"]["staging"]
+        def _clean():
+            try:
+                staging.clean_episode(staging_root, cr_season_id, job.season, cr_ep)
+            except Exception as e:
+                log.warning("staging cleanup failed: %s", e)
+
         self.queue.update_progress(job.id, progress=0.0, phase="starting download")
         try:
             src_path = self.dl.download_audio(cr_season_id, cr_ep, job.season, on_progress=on_prog)
         except Exception as e:
             self.queue.set_state(job.id, "failed", last_error=f"download: {e}")
+            _clean()
             return
 
         # capture downloaded size
@@ -96,6 +104,7 @@ class Worker:
                 )
             except Exception as e:
                 self.queue.set_state(job.id, "failed", last_error=f"sync: {e}")
+                _clean()
                 return
 
             log.info("sync delay=%dms score=%.2f", result.delay_ms, result.score)
@@ -106,6 +115,7 @@ class Worker:
                     sync_delay_ms=result.delay_ms, sync_score=result.score,
                     last_error=f"low confidence ({result.score:.2f}) — set manual delay if needed",
                 )
+                _clean()
                 return
             if abs(result.delay_ms) > cfg["sync"]["max_abs_delay_ms"]:
                 self.queue.set_state(
@@ -113,6 +123,7 @@ class Worker:
                     sync_delay_ms=result.delay_ms, sync_score=result.score,
                     last_error=f"delay {result.delay_ms}ms out of range — set manual delay if needed",
                 )
+                _clean()
                 return
 
             self.queue.set_state(
@@ -128,14 +139,13 @@ class Worker:
                 job.target_path, str(src_path), result_delay,
                 lang=audio_lang, track_name=audio_label,
             )
-            try:
-                src_path.unlink()
-            except Exception:
-                pass
         except Exception as e:
             self.queue.set_state(job.id, "failed", last_error=f"mux: {e}")
+            _clean()
             return
 
+        # Success: nuke the per-episode staging dir + prune empty parents
+        _clean()
         self.queue.set_state(job.id, "done")
         log.info("done: job %d", job.id)
         # trigger Sonarr rescan so DB picks up new filename

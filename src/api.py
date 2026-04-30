@@ -1039,6 +1039,23 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
     def get_audit(limit: int = 200):
         return audit.tail(n=max(1, min(limit, 2000)))
 
+    # ---------- staging maintenance ----------
+    @app.get("/api/staging", dependencies=[Depends(require_auth)])
+    def staging_status():
+        from . import staging as _staging
+        return _staging.staging_disk_usage(cfg["paths"]["staging"])
+
+    @app.post("/api/staging/sweep", dependencies=[Depends(require_admin)])
+    def staging_sweep(payload: dict | None = None, request: Request = None,
+                      current: str = Depends(require_auth)):
+        from . import staging as _staging
+        max_age_days = float((payload or {}).get("max_age_days", 0))
+        n = _staging.sweep_old(cfg["paths"]["staging"], max_age_days=max_age_days)
+        ip = request.client.host if request and request.client else "?"
+        audit.write(actor=current, ip=ip, action="staging.sweep",
+                    max_age_days=max_age_days, removed=n)
+        return {"removed_dirs": n, "max_age_days": max_age_days}
+
     # ---------- backup / restore ----------
     @app.get("/api/backup", dependencies=[Depends(require_admin)])
     def backup_data(request: Request, current: str = Depends(require_auth)):
