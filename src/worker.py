@@ -43,11 +43,12 @@ class Worker:
         log.info("=== job %d: S%02dE%02d -> CR season %s ep %d ===",
                  job.id, job.season, job.episode, cr_season_id, cr_ep)
 
-        # per-show language override
+        # per-show language + source override
         dub = show.get("cr_dub_lang") or cfg["target_language"]["cr_dub_lang"]
         sub = show.get("cr_sub_lang") or cfg["target_language"]["cr_sub_lang"]
         self.dl.dub_lang = dub
         self.dl.sub_lang = sub
+        self.dl.source = show.get("source", "crunchyroll")
 
         # progress callback writes to queue; throttled to ~1/s by sqlite cost
         last_t = [0.0]

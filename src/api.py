@@ -390,15 +390,17 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
         return shows.load()
 
     @app.get("/api/shows/search", dependencies=[Depends(require_auth)])
-    def search_shows(q: str):
+    def search_shows(q: str, source: str = "crunchyroll"):
         try:
-            return downloader.search_show(q)
+            return downloader.search_show(q, source=source)
         except Exception as e:
             raise HTTPException(500, f"mdnx search failed: {e}")
 
     @app.get("/api/cr/season/{cr_season_id}/dubs", dependencies=[Depends(require_auth)])
-    def cr_season_dubs(cr_season_id: str):
-        return {"cr_season_id": cr_season_id, "dubs": downloader.probe_season_dubs(cr_season_id)}
+    def cr_season_dubs(cr_season_id: str, source: str = "crunchyroll"):
+        return {"cr_season_id": cr_season_id,
+                "source": source,
+                "dubs": downloader.probe_season_dubs(cr_season_id, source=source)}
 
     @app.get("/api/shows/sonarr", dependencies=[Depends(require_auth)])
     def list_sonarr_series():
@@ -424,6 +426,7 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
             season_offset=payload.get("season_offset", {}),
             target_audio=payload.get("target_audio"),
             cr_dub_lang=payload.get("cr_dub_lang"),
+            source=payload.get("source", "crunchyroll"),
             enabled=True,
         )
 

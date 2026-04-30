@@ -1,4 +1,9 @@
-"""mdnx (multi-downloader-nx) wrapper for Crunchyroll audio-only downloads."""
+"""mdnx (multi-downloader-nx) wrapper for audio-only downloads.
+
+Supports Crunchyroll, Hidive, and AnimationDigitalNetwork. Source is selected
+per-show via the `source` key (one of `crunchyroll`, `hidive`, `adn`); the
+mapping to mdnx's `--service` flag lives in SERVICE_MAP.
+"""
 import logging
 import os
 import re
@@ -14,14 +19,25 @@ log = logging.getLogger(__name__)
 # mdnx reads its config at boot, so once aniDL is running it has its own dir.
 _MDNX_BOOT_LOCK = threading.Lock()
 
+# Dubsmith source key -> mdnx --service flag value
+SERVICE_MAP = {
+    "crunchyroll": "crunchy",
+    "hidive": "hidive",
+    "adn": "ADN",
+}
 
-def probe_season_dubs(cr_season_id: str, timeout: int = 60) -> list[str]:
-    """Return list of available dub language codes for a CR season ID via mdnx --series."""
+
+def _service(source: str) -> str:
+    return SERVICE_MAP.get((source or "crunchyroll").lower(), "crunchy")
+
+
+def probe_season_dubs(cr_season_id: str, timeout: int = 60, source: str = "crunchyroll") -> list[str]:
+    """Return list of available dub language codes for a season ID via mdnx --series."""
     if not security.valid_cr_id(cr_season_id):
         return []
     try:
         r = subprocess.run(
-            ["aniDL", "--service", "crunchy", "-s", cr_season_id],
+            ["aniDL", "--service", _service(source), "-s", cr_season_id],
             capture_output=True, text=True, timeout=timeout,
         )
     except Exception as e:
@@ -40,13 +56,13 @@ def probe_season_dubs(cr_season_id: str, timeout: int = 60) -> list[str]:
     return sorted(langs)
 
 
-def search_show(query: str, limit: int = 10) -> list[dict]:
+def search_show(query: str, limit: int = 10, source: str = "crunchyroll") -> list[dict]:
     """Run aniDL search and parse top results into a list.
 
     Returns list of dicts: {show_id, title, seasons: [{cr_season_id, name, dub_langs}], audios, subs}
     """
     r = subprocess.run(
-        ["aniDL", "--service", "crunchy", "-f", query],
+        ["aniDL", "--service", _service(source), "-f", query],
         capture_output=True, text=True, timeout=120,
     )
     out = r.stdout
@@ -94,12 +110,14 @@ def search_show(query: str, limit: int = 10) -> list[dict]:
 
 class MdnxDownloader:
     def __init__(self, staging_dir: str, widevine_dir: str,
-                 dub_lang: str = "ptBR", sub_lang: str = "ptBR"):
+                 dub_lang: str = "ptBR", sub_lang: str = "ptBR",
+                 source: str = "crunchyroll"):
         self.staging = Path(staging_dir)
         self.staging.mkdir(parents=True, exist_ok=True)
         self.widevine = Path(widevine_dir)
         self.dub_lang = dub_lang
         self.sub_lang = sub_lang
+        self.source = source
 
     def _mdnx_config_dir(self) -> Path:
         # Persist user/profile config under /data so it survives container recreate
@@ -151,7 +169,7 @@ class MdnxDownloader:
 
         cmd = [
             "aniDL",
-            "--service", "crunchy",
+            "--service", _service(self.source),
             "-s", cr_season_id,
             "-e", str(ep_number),
             "--dubLang", self.dub_lang,

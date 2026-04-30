@@ -2,14 +2,14 @@
 
 > **Forge missing dubs into your library.** Auto-fetch language audio tracks from Crunchyroll and mux them into the video files you already have.
 
-Dubsmith is a self-hosted companion for **Sonarr** + **Plex** / **Jellyfin** / **Emby**. It scans your library for episodes that lack a desired audio language (e.g. Portuguese dub on a Japanese-only Bluray rip), pulls the missing track from Crunchyroll, auto-syncs it against your existing video, and remuxes the file in-place — preserving your original quality.
+Dubsmith is a self-hosted companion for **Sonarr** + **Plex** / **Jellyfin** / **Emby**. It scans your library for episodes that lack a desired audio language (e.g. Portuguese dub on a Japanese-only Bluray rip), pulls the missing track from **Crunchyroll**, **Hidive**, or **AnimationDigitalNetwork (ADN)**, auto-syncs it against your existing video, and remuxes the file in-place — preserving your original quality.
 
 ![dashboard](docs/dashboard.png)
 
 ## Features
 
 - 🔍 **Scans Sonarr** for episodes missing a target audio language
-- 🌐 **Pulls dubs from Crunchyroll** via [multi-downloader-nx](https://github.com/anidl/multi-downloader-nx) (DRM-decrypted with your own Widevine CDM)
+- 🌐 **Pulls dubs from Crunchyroll, Hidive, and AnimationDigitalNetwork (ADN)** via [multi-downloader-nx](https://github.com/anidl/multi-downloader-nx) — DRM-decrypted with your own Widevine CDM, per-show source selection
 - 📐 **Auto-sync** via FFT cross-correlation against the original Japanese track
 - 🎬 **Remuxes in place** with `mkvmerge` — no re-encode, original video bit-for-bit preserved
 - 🔁 **Sonarr-aware** — optionally unmonitors episodes after mux so Sonarr won't re-grab a different release
@@ -47,10 +47,6 @@ Then:
 - [docs/setup.md](docs/setup.md) — full installation + configuration guide
 - [docs/architecture.md](docs/architecture.md) — how it works
 - [docs/troubleshooting.md](docs/troubleshooting.md) — common issues
-
-## Status
-
-Phase 2b (UI complete). Multi-source roadmap (Hidive, ADN) Phase 4. See [PLAN.md](PLAN.md).
 
 ## License
 
