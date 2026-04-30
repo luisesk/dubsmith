@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% set active = "queue" %}
+{% set page_title = "Job queue" %}
+{% block title %}Dubsmith · queue{% endblock %}
+{% block body %}
+
+<div class="page-header">
+  <div>
+    <div class="page-eyebrow">
+      {% set running = (stats.downloading or 0) + (stats.syncing or 0) + (stats.muxing or 0) %}
+      {{ running }} running · {{ stats.pending or 0 }} queued · {{ stats.failed or 0 }} failed · {{ stats.done or 0 }} done
+    </div>
+    <h1 class="page-title">Job queue</h1>
+  </div>
+  <div class="page-actions">
+    <button class="btn ghost" hx-post="/api/queue/retry-all" hx-swap="none"
+      onclick="setTimeout(()=>softReload(),300)" hx-confirm="Reset all failed?">⟲ Retry failed</button>
+    <button class="btn danger" hx-delete="/api/queue/clear?state=failed" hx-swap="none"
+      onclick="setTimeout(()=>softReload(),300)" hx-confirm="Delete all failed?">✕ Clear failed</button>
+  </div>
+</div>
+
+<div class="chip-row" style="margin-bottom:8px;">
+  <a href="/queue-page" class="chip {% if not state %}active{% endif %}">All <code style="opacity:.6;margin-left:4px;">{{ stats.values()|sum }}</code></a>
+  {% for k, v in stats.items() %}
+  <a href="/queue-page?state={{ k }}" class="chip {% if state==k %}active{% endif %}">{{ k }} <code style="opacity:.6;margin-left:4px;">{{ v }}</code></a>
+  {% endfor %}
+</div>
+
+<div style="display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:16px;align-items:start;">
+  <div style="display:flex;flex-direction:column;gap:10px;min-width:0;">
+    {% for j in jobs %}
+    <div data-jobid="{{ j.id }}" style="display:flex;flex-direction:column;gap:8px;padding:14px;border-radius:10px;background:var(--af-bg-card);border:1px solid var(--af-border);">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <div style="width:32px;height:32px;border-radius:8px;display:grid;place-items:center;
+          background: color-mix(in oklab, var(--af-{{ 'success' if j.state=='done' else ('danger' if j.state=='failed' else 'info') }}) 18%, transparent);
+          color: var(--af-{{ 'success' if j.state=='done' else ('danger' if j.state=='failed' else 'info') }});">
+          {% if j.state == 'done' %}✓
+          {% elif j.state == 'failed' %}✕
+          {% elif j.state == 'pending' %}◷
+          {% else %}↻{% endif %}
+        </div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <a href="/show/{{ j.series_id }}" style="font-weight:600;color:var(--af-text);">{{ names.get(j.series_id, "Series " ~ j.series_id) }}</a>
+            <span style="font-family:var(--af-font-mono);font-size:11px;color:var(--af-text-mute);">S{{ "%02d"|format(j.season) }}E{{ "%02d"|format(j.episode) }}</span>
+            <span class="state-pill state-{{ j.state }}{% if j.state in ['downloading','syncing','muxing'] %} live{% endif %}">{{ j.state }}</span>
+          </div>
+          <div style="margin-top:3px;font-size:11.5px;color:var(--af-text-mute);">
+            {% if j.state in ('downloading','syncing','muxing') %}{{ j.phase or j.state }}{% if j.bytes_done %} · {{ '%.1f MB'|format(j.bytes_done/1e6) if j.bytes_done < 1e9 else '%.2f GB'|format(j.bytes_done/1e9) }}{% endif %}
+            {% elif j.state == 'failed' %}{{ j.last_error or 'no error message' }}
+            {% elif j.state == 'quarantined' %}{{ j.last_error or 'low confidence' }}
+            {% elif j.state == 'pending' %}Waiting in queue…
+            {% else %}attempt {{ j.attempts }}{% if j.sync_delay_ms is not none %} · sync {% if j.sync_delay_ms > 0 %}+{% endif %}{{ j.sync_delay_ms }}ms{% endif %}{% if j.sync_score %} · {{ "%.0f"|format(j.sync_score) }}%{% endif %}
+            {% endif %}
+          </div>
+        </div>
+        <div style="display:flex;gap:4px;">
+          {% if j.state in ('failed','quarantined','pending') %}
+          <button class="btn sm ghost" hx-post="/api/jobs/{{ j.id }}/retry" hx-swap="none" title="retry"
+            onclick="setTimeout(()=>softReload(),300)">↻</button>
+          {% endif %}
+          {% if j.state != 'done' %}
+          <button class="btn sm ghost" hx-post="/api/jobs/{{ j.id }}/skip" hx-swap="none" title="skip"
+            onclick="setTimeout(()=>softReload(),300)">✕</button>
+          {% endif %}
+        </div>
+      </div>
+      {% if j.state in ('downloading','syncing','muxing') %}
+      {% set indet = (j.progress or 0) < 0 %}
+      {% set pct = 100 if indet else ((j.progress or 0) * 100)|int %}
+      <div class="progress animated{% if indet %} indeterminate{% endif %}" data-progress-wrap><div data-bar style="width:{{ pct }}%;"></div></div>
+      <div style="display:flex;justify-content:space-between;font-family:var(--af-font-mono);font-size:10.5px;color:var(--af-text-dim);">
+        <span>attempt {{ j.attempts }}</span>
+        <span data-pct>{% if indet %}…{% else %}{{ pct }}%{% endif %}</span>
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+    {% if not jobs %}
+    <div style="padding:2em;text-align:center;color:var(--af-text-dim);background:var(--af-bg-card);border:1px solid var(--af-border);border-radius:10px;">No jobs match.</div>
+    {% endif %}
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:16px;position:sticky;top:72px;min-width:0;">
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">Live log</div>
+        <a class="card-action" href="/logs">Open file ›</a>
+      </div>
+      <pre id="live-log" hx-get="/api/logs.txt?lines=20" hx-trigger="load, every 4s" hx-swap="innerHTML"
+        style="margin:0;padding:12px;font-family:var(--af-font-mono);font-size:10.5px;line-height:1.55;color:var(--af-text);background:var(--af-bg-input);max-height:380px;overflow:auto;white-space:pre-wrap;word-break:break-all;">
+        loading…
+      </pre>
+    </div>
+    <div class="card">
+      <div class="card-head"><div class="card-title">Concurrency</div></div>
+      <div class="card-body">
+        {% for k, label in [('downloading','Downloads'),('muxing','Mux jobs'),('syncing','Sync analysis')] %}
+        <div style="display:grid;grid-template-columns:120px 1fr auto;gap:10px;align-items:center;padding:6px 0;">
+          <span style="font-size:12px;">{{ label }}</span>
+          <div class="progress"><div style="width:{{ ((stats[k] or 0) * 25)|int }}%;"></div></div>
+          <span style="font-family:var(--af-font-mono);font-size:11px;color:var(--af-text-mute);">{{ stats[k] or 0 }} / 4</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+async function refreshLiveJobs() {
+  const cards = document.querySelectorAll('[data-jobid]');
+  for (const card of cards) {
+    const bar = card.querySelector('[data-bar]');
+    if (!bar) continue;  // not a running card
+    const id = card.dataset.jobid;
+    try {
+      const r = await fetch(`/api/jobs/${id}`, {credentials:'same-origin'});
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (!['downloading','syncing','muxing'].includes(j.state)) {
+        softReload(); return;
+      }
+      const indet = j.progress < 0;
+      const pct = indet ? 100 : Math.round((j.progress || 0) * 100);
+      const wrap = card.querySelector('[data-progress-wrap]');
+      if (wrap) wrap.classList.toggle('indeterminate', indet);
+      bar.style.width = pct + '%';
+      const pctEl = card.querySelector('[data-pct]'); if (pctEl) pctEl.textContent = indet ? '…' : (pct + '%');
+    } catch {}
+  }
+}
+setInterval(refreshLiveJobs, 1500);
+</script>
+{% endblock %}

@@ -1,0 +1,179 @@
+{% extends "base.html" %}
+{% set active = "home" %}
+{% set page_title = "Dashboard" %}
+{% block title %}Dubsmith · dashboard{% endblock %}
+{% block body %}
+
+<div class="hero">
+  <div style="flex:1;">
+    <div class="hero-meta"><span class="dot">●</span> <span id="hero-status">Loading library state…</span></div>
+    <h1 class="hero-title" id="hero-title">Forge missing dubs into your library.</h1>
+    <div class="hero-sub" id="hero-sub">Dubsmith pulls language tracks from Crunchyroll and welds them into existing video files.</div>
+  </div>
+  <div style="display:flex;gap:8px;">
+    <button class="btn ghost" onclick="rescanAll()">⟲ Rescan all</button>
+    <a class="btn primary" href="/shows">+ Add show</a>
+  </div>
+</div>
+
+<div class="stats-grid" id="stats-grid">
+  <div class="stat-card success"><div class="stat-label">Tracks muxed</div><div class="stat-value" id="m-done">—</div><div class="stat-sub delta-tone" id="m-done-sub">last 24h: —</div></div>
+  <div class="stat-card info"><div class="stat-label">Avg sync delay</div><div class="stat-value"><span id="m-delay">—</span><span style="font-size:.5em;color:var(--af-text-mute);margin-left:.3em;">ms</span></div><div class="stat-sub" id="m-delay-sub">absolute average</div></div>
+  <div class="stat-card success"><div class="stat-label">Avg confidence</div><div class="stat-value" id="m-score">—</div><div class="stat-sub" id="m-score-sub">cross-correlation</div></div>
+  <div class="stat-card warn"><div class="stat-label">In queue</div><div class="stat-value" id="m-queue">—</div><div class="stat-sub" id="m-queue-sub">— failed · — running</div></div>
+</div>
+
+<div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px;">
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">Now muxing</div>
+      <a class="card-action" href="/queue-page">Open queue ›</a>
+    </div>
+    <div class="card-body">
+      <div id="now-muxing">
+        <div style="padding:14px;color:var(--af-text-dim);font-size:12px;text-align:center;">Loading…</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">Recent activity</div>
+      <a class="card-action" href="/queue-page?state=done">View all ›</a>
+    </div>
+    <div class="card-body" style="padding:0;">
+      <table style="border:none;border-radius:0;">
+        <tbody>
+          {% for j in jobs[:8] %}
+          <tr>
+            <td style="width:28px;">
+              {% if j.state == 'done' %}
+              <div style="width:22px;height:22px;border-radius:6px;display:grid;place-items:center;background:color-mix(in oklab, var(--af-success) 18%, transparent);color:var(--af-success);">✓</div>
+              {% elif j.state == 'failed' %}
+              <div style="width:22px;height:22px;border-radius:6px;display:grid;place-items:center;background:color-mix(in oklab, var(--af-danger) 18%, transparent);color:var(--af-danger);">✕</div>
+              {% else %}
+              <div style="width:22px;height:22px;border-radius:6px;display:grid;place-items:center;background:var(--af-bg-input);color:var(--af-text-dim);">·</div>
+              {% endif %}
+            </td>
+            <td style="min-width:0;">
+              <div style="font-size:12.5px;font-weight:600;">{{ names.get(j.series_id, "Series " ~ j.series_id) }}</div>
+              <div style="font-family:var(--af-font-mono);font-size:10.5px;color:var(--af-text-dim);">
+                S{{ "%02d"|format(j.season) }}E{{ "%02d"|format(j.episode) }}
+                {% if j.sync_delay_ms is not none %} · sync {% if j.sync_delay_ms > 0 %}+{% endif %}{{ j.sync_delay_ms }}ms{% endif %}
+                {% if j.sync_score %} · {{ "%.0f"|format(j.sync_score) }}{% endif %}
+              </div>
+            </td>
+            <td style="text-align:right;"><span class="state-pill state-{{ j.state }}">{{ j.state }}</span></td>
+          </tr>
+          {% endfor %}
+          {% if not jobs %}
+          <tr><td colspan="3" style="text-align:center;color:var(--af-text-dim);padding:1.5em;">No jobs yet.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+async function rescanAll() {
+  const r = await fetch('/api/shows', {credentials:'same-origin'});
+  const shows = await r.json();
+  for (const sid of Object.keys(shows)) {
+    fetch('/scan/'+sid, {method:'POST', credentials:'same-origin'});
+  }
+  setTimeout(()=>softReload(), 800);
+}
+
+function fmt(n) { return (n||0).toLocaleString(); }
+
+function applyMetrics(d) {
+  const stats = d.stats || {};
+  const m = d.metrics || d;
+  document.getElementById('m-done').textContent = fmt(m.done_total);
+  document.getElementById('m-done-sub').textContent = `+${m.done_24h||0} last 24h`;
+  document.getElementById('m-delay').textContent = fmt(m.avg_abs_delay_ms);
+  document.getElementById('m-score').textContent = fmt(m.avg_sync_score);
+  const queued = (stats.pending||0) + (stats.downloading||0) + (stats.syncing||0) + (stats.muxing||0);
+  document.getElementById('m-queue').textContent = queued;
+  document.getElementById('m-queue-sub').textContent = `${stats.failed||0} failed · ${(stats.downloading||0)+(stats.syncing||0)+(stats.muxing||0)} running`;
+
+  const missing = (stats.pending||0) + (stats.failed||0);
+  if (queued > 0) {
+    document.getElementById('hero-status').textContent = `${queued} job${queued>1?'s':''} active · pipeline running`;
+    document.getElementById('hero-title').textContent = `${queued} job${queued>1?'s':''} in flight.`;
+    document.getElementById('hero-sub').textContent = 'Live tracks being muxed into your library.';
+  } else if (missing > 0) {
+    document.getElementById('hero-status').textContent = `${missing} ep${missing>1?'s':''} pending dub injection`;
+    document.getElementById('hero-title').textContent = `${missing} pending job${missing>1?'s':''}.`;
+  } else {
+    document.getElementById('hero-status').textContent = 'Library scan complete · no missing dubs';
+    document.getElementById('hero-title').textContent = 'All caught up.';
+  }
+}
+
+const wsUrl = `${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws/queue`;
+let ws;
+function connect() {
+  ws = new WebSocket(wsUrl);
+  ws.onmessage = e => applyMetrics(JSON.parse(e.data));
+  ws.onclose = () => setTimeout(connect, 3000);
+}
+fetch('/api/metrics', {credentials:'same-origin'}).then(r=>r.json()).then(applyMetrics).catch(()=>{});
+
+// resolve series_id -> name from /api/shows
+let _showNames = {};
+async function loadShowNames() {
+  const r = await fetch('/api/shows', {credentials:'same-origin'}).then(x=>x.json()).catch(()=>({}));
+  for (const sid in r) _showNames[sid] = r[sid].name || `Series ${sid}`;
+}
+function nameFor(sid) { return _showNames[sid] || `Series ${sid}`; }
+
+async function refreshActive() {
+  if (!Object.keys(_showNames).length) await loadShowNames();
+  const r = await fetch('/queue?state=downloading&limit=5', {credentials:'same-origin'});
+  let active = [];
+  try { active = await r.json(); } catch {}
+  const r2 = await fetch('/queue?state=syncing&limit=5', {credentials:'same-origin'}).then(x=>x.json()).catch(()=>[]);
+  const r3 = await fetch('/queue?state=muxing&limit=5', {credentials:'same-origin'}).then(x=>x.json()).catch(()=>[]);
+  active = [...active, ...r2, ...r3];
+  const c = document.getElementById('now-muxing');
+  if (!active.length) {
+    c.innerHTML = '<div style="padding:14px;color:var(--af-text-dim);font-size:12px;text-align:center;">No active jobs.</div>';
+    return;
+  }
+  c.innerHTML = active.map(j => {
+    const indet = j.progress < 0;
+    const pct = indet ? 100 : Math.round((j.progress||0) * 100);
+    const sz = j.bytes_done ? ` · ${fmtBytes(j.bytes_done)}${j.bytes_total && j.bytes_total !== j.bytes_done ? '/'+fmtBytes(j.bytes_total) : ''}` : '';
+    return `
+    <div style="padding:12px;border-radius:10px;background:var(--af-bg-input);border:1px solid var(--af-border);margin-bottom:8px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <a href="/show/${j.series_id}" style="font-weight:600;font-size:13px;color:var(--af-text);">${nameFor(j.series_id)}</a>
+            <span style="font-family:var(--af-font-mono);font-size:11px;color:var(--af-text-mute);">S${String(j.season).padStart(2,'0')}E${String(j.episode).padStart(2,'0')}</span>
+            <span class="state-pill state-${j.state} live">${j.state}</span>
+          </div>
+          <div style="margin-top:3px;font-size:11px;color:var(--af-text-mute);">${j.phase || j.state}${sz}</div>
+        </div>
+        <div style="text-align:right;font-family:var(--af-font-mono);font-size:11px;">
+          <div style="font-weight:700;color:var(--af-text);">${indet ? '…' : pct+'%'}</div>
+          <div style="color:var(--af-text-dim);font-size:10px;">attempt ${j.attempts}</div>
+        </div>
+      </div>
+      <div style="margin-top:10px;"><div class="progress animated${indet?' indeterminate':''}"><div style="width:${pct}%"></div></div></div>
+    </div>`;
+  }).join('');
+}
+function fmtBytes(n) {
+  if (!n) return '';
+  if (n > 1e9) return (n/1e9).toFixed(2)+' GB';
+  if (n > 1e6) return (n/1e6).toFixed(1)+' MB';
+  if (n > 1e3) return (n/1e3).toFixed(0)+' KB';
+  return n+' B';
+}
+refreshActive(); setInterval(refreshActive, 1500);
+connect();
+</script>
+{% endblock %}

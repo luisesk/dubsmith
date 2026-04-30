@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.env
+.env.*
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# runtime data — never commit
+data/
+config.yml
+*.db
+.private/
+
+# host-specific compose overlays
+docker-compose.override.yml
+
+# editor
+.vscode/
+.idea/
+.DS_Store

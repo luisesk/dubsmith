@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% set active = "shows" %}
+{% set page_title = "Shows" %}
+{% block title %}Dubsmith · shows{% endblock %}
+{% block body %}
+
+<div class="page-header">
+  <div>
+    <div class="page-eyebrow">{{ shows|length }} tracked · {{ untracked|length }} available in Sonarr</div>
+    <h1 class="page-title">Shows</h1>
+  </div>
+  <div class="page-actions">
+    <div class="chip-row">
+      <button class="chip" id="view-table" onclick="setView('table')">Table</button>
+      <button class="chip active" id="view-grid" onclick="setView('grid')">Posters</button>
+    </div>
+  </div>
+</div>
+
+<div id="tracked-section">
+  <h2 style="font-size:14px;color:var(--af-text-mute);margin:0 0 8px;">Tracked</h2>
+  <!-- table view -->
+  <div id="tracked-table" style="display:none;">
+    <table>
+      <thead><tr><th>id</th><th>Name</th><th>CR seasons</th><th>Lang</th><th>Stats</th><th>On</th><th></th></tr></thead>
+      <tbody>
+      {% for sid, s in shows.items() %}
+        <tr>
+          <td style="font-family:var(--af-font-mono);font-size:11px;color:var(--af-text-dim);">{{ sid }}</td>
+          <td><b>{{ s.name }}</b></td>
+          <td style="font-family:var(--af-font-mono);font-size:11px;">
+            {% for k,v in (s.cr_seasons or {}).items() %}<div>S{{ k }}: <code>{{ v }}</code></div>{% endfor %}
+          </td>
+          <td><span class="lang-tag pt">{{ (s.target_audio or 'por')|upper }}</span></td>
+          <td>
+            {% set ps = per_series.get(sid|int) or {} %}
+            {% for k in ['done','pending','failed','quarantined'] %}{% if ps.get(k) %}
+            <span class="state-pill state-{{ k }}">{{ ps.get(k) }} {{ k }}</span>
+            {% endif %}{% endfor %}
+          </td>
+          <td>
+            <button class="btn sm ghost" hx-post="/api/shows/{{ sid }}/toggle" hx-swap="none"
+              onclick="setTimeout(()=>softReload(),300)">{{ "✓" if s.enabled else "✗" }}</button>
+          </td>
+          <td style="white-space:nowrap;">
+            <a class="btn sm ghost" href="/show/{{ sid }}">view</a>
+            <a class="btn sm ghost" href="/shows/add/{{ sid }}">edit</a>
+            <button class="btn sm danger" hx-delete="/api/shows/{{ sid }}" hx-swap="none"
+              hx-confirm="Remove {{ s.name }}?"
+              onclick="setTimeout(()=>softReload(),300)">×</button>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- grid view -->
+  <div id="tracked-grid" class="show-grid">
+    {% for sid, s in shows.items() %}
+    {% set ps = per_series.get(sid|int) or {} %}
+    <div class="show-card" style="position:relative;">
+      <a href="/show/{{ sid }}" class="show-poster">
+        <img src="/api/poster/{{ sid }}.jpg" alt="{{ s.name }}" loading="lazy"
+          onerror="this.style.display='none';this.nextElementSibling.style.display='grid';"
+          style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;">
+        <div class="initials" style="display:none;">
+          {{ s.name.split(' ')[0][0]|upper }}{% if s.name.split(' ')|length > 1 %}{{ s.name.split(' ')[1][0]|upper }}{% endif %}
+        </div>
+        <div class="meta">
+          {% for k,v in (s.cr_seasons or {}).items() %}S{{ k }}{% if not loop.last %} · {% endif %}{% endfor %}
+        </div>
+        <div class="badge">
+          {% if not s.enabled %}<span class="state-pill state-pending">OFF</span>
+          {% elif ps.get('failed') %}<span class="state-pill state-failed">{{ ps.failed }} fail</span>
+          {% elif ps.get('pending') %}<span class="state-pill state-pending">{{ ps.pending }} pend</span>
+          {% else %}<span class="state-pill state-done">on</span>
+          {% endif %}
+        </div>
+      </a>
+      <div class="show-info">
+        <div class="show-title">{{ s.name }}</div>
+        <div class="show-meta">id {{ sid }} · <span class="lang-tag pt">{{ (s.target_audio or 'por')|upper }}</span></div>
+        <div style="display:flex;gap:6px;margin-top:6px;">
+          <a class="btn sm ghost" href="/shows/add/{{ sid }}">edit</a>
+          <button class="btn sm ghost" hx-post="/scan/{{ sid }}" hx-swap="none">scan</button>
+          <button class="btn sm danger" hx-delete="/api/shows/{{ sid }}" hx-swap="none"
+            hx-confirm="Remove {{ s.name }}?"
+            onclick="setTimeout(()=>softReload(),300)">×</button>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+    {% if not shows %}
+    <div style="grid-column:1/-1;padding:2em;text-align:center;color:var(--af-text-mute);">No tracked shows yet — pick one below.</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card" style="margin-top:24px;">
+  <div class="card-head">
+    <div class="card-title">Add show — pick from Sonarr</div>
+    <input id="filter" placeholder="filter title…" oninput="filt(this.value)" class="card-action"
+      style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:5px 10px;color:var(--af-text);font-size:12px;width:240px;">
+  </div>
+  <table id="untracked">
+    <thead><tr><th>id</th><th>Title</th><th>Year</th><th>Eps</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {% for s in untracked %}
+      <tr data-title="{{ s.title|lower }}">
+        <td style="font-family:var(--af-font-mono);font-size:11px;color:var(--af-text-dim);">{{ s.id }}</td>
+        <td><b>{{ s.title }}</b></td>
+        <td style="color:var(--af-text-mute);">{{ s.year or '' }}</td>
+        <td style="font-family:var(--af-font-mono);font-size:11px;">{{ s.episodeCount }}</td>
+        <td>{% if s.monitored %}<span class="state-pill state-done">monitored</span>{% else %}<span class="state-pill state-pending">unmonitored</span>{% endif %}</td>
+        <td><a class="btn sm primary" href="/shows/add/{{ s.id }}">add ›</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+function filt(q) {
+  q = q.toLowerCase();
+  document.querySelectorAll('#untracked tbody tr').forEach(r => {
+    r.style.display = r.dataset.title.includes(q) ? '' : 'none';
+  });
+}
+function setView(v) {
+  localStorage.setItem('shows_view', v);
+  document.getElementById('tracked-table').style.display = v === 'table' ? '' : 'none';
+  document.getElementById('tracked-grid').style.display = v === 'grid' ? '' : 'none';
+  document.getElementById('view-table').classList.toggle('active', v === 'table');
+  document.getElementById('view-grid').classList.toggle('active', v === 'grid');
+}
+setView(localStorage.getItem('shows_view') || 'grid');
+</script>
+{% endblock %}

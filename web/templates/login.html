@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in · Dubsmith</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/tokens.css">
+</head>
+<body style="display:grid;place-items:center;min-height:100vh;background:radial-gradient(circle at 30% 25%, color-mix(in oklab, var(--af-accent) 20%, transparent), transparent 60%), var(--af-bg);">
+<div style="background:var(--af-bg-card);border:1px solid var(--af-border);border-radius:14px;padding:32px;width:380px;box-shadow:var(--af-shadow-lg);position:relative;overflow:hidden;">
+  <div style="position:absolute;inset:0;background:radial-gradient(rgba(255,122,69,0.10) 1px, transparent 1.4px);background-size:10px 10px;opacity:.6;pointer-events:none;"></div>
+  <div style="position:relative;">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:24px;">
+      <div class="brand-mark"><svg viewBox="0 0 24 24" fill="none"><g stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="8" y1="9" x2="8" y2="11"/><line x1="10" y1="6.5" x2="10" y2="11"/><line x1="12" y1="4" x2="12" y2="11"/><line x1="14" y1="6" x2="14" y2="11"/><line x1="16" y1="8" x2="16" y2="11"/></g><path d="M5 12h12a2 2 0 0 1 2 2v0H5z" fill="currentColor"/><path d="M9 14v3M15 14v3M7 17h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></div>
+      <div>
+        <div style="font-family:var(--af-font-display);font-weight:800;font-size:22px;letter-spacing:-0.02em;">Dubsmith</div>
+        <div style="font-size:11px;color:var(--af-text-mute);font-family:var(--af-font-mono);">audio dub muxer</div>
+      </div>
+    </div>
+    <h1 style="margin:0 0 6px;font-size:18px;font-weight:700;">Sign in</h1>
+    <div style="color:var(--af-text-mute);font-size:13px;margin-bottom:20px;">Enter your credentials to continue.</div>
+    {% if error %}
+    <div style="padding:10px 12px;border-radius:8px;background:color-mix(in oklab, var(--af-danger) 14%, transparent);color:var(--af-danger);font-size:13px;border:1px solid color-mix(in oklab, var(--af-danger) 30%, transparent);margin-bottom:14px;">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="/login" style="display:flex;flex-direction:column;gap:12px;">
+      <input type="hidden" name="next" value="{{ next }}">
+      <div>
+        <label style="font-size:11px;color:var(--af-text-mute);font-family:var(--af-font-mono);text-transform:uppercase;letter-spacing:.08em;">Username</label>
+        <input name="username" required autofocus
+          style="width:100%;margin-top:4px;background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:8px;padding:10px 12px;color:var(--af-text);font-size:14px;">
+      </div>
+      <div>
+        <label style="font-size:11px;color:var(--af-text-mute);font-family:var(--af-font-mono);text-transform:uppercase;letter-spacing:.08em;">Password</label>
+        <input name="password" type="password" required
+          style="width:100%;margin-top:4px;background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:8px;padding:10px 12px;color:var(--af-text);font-size:14px;">
+      </div>
+      <button type="submit" class="btn primary" style="margin-top:8px;padding:10px;justify-content:center;">Sign in</button>
+    </form>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% set active = "settings" %}
+{% set page_title = "Users" %}
+{% block title %}Dubsmith · users{% endblock %}
+{% block body %}
+
+<div class="page-header">
+  <div>
+    <div class="page-eyebrow">access control</div>
+    <h1 class="page-title">Users</h1>
+    <div style="color:var(--af-text-mute);margin-top:4px;font-size:13px;">Logged in as <b>{{ current_user }}</b>. Roles: <code>admin</code> (full), <code>operator</code> (queue + shows), <code>viewer</code> (read-only).</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><div class="card-title">Existing users</div></div>
+  <table>
+    <thead><tr><th>Username</th><th>Role</th><th></th></tr></thead>
+    <tbody>
+    {% for u in users_list %}
+    <tr>
+      <td><b>{{ u.username }}</b>{% if u.username == current_user %} <span class="state-pill state-done" style="margin-left:6px;">you</span>{% endif %}</td>
+      <td>
+        <select onchange="changeRole('{{ u.username }}', this.value)" {% if u.username == current_user %}disabled{% endif %}
+          style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:4px 8px;color:var(--af-text);">
+          {% for r in roles %}<option value="{{ r }}" {% if u.role == r %}selected{% endif %}>{{ r }}</option>{% endfor %}
+        </select>
+      </td>
+      <td style="white-space:nowrap;">
+        <button class="btn sm ghost" onclick="changePassword('{{ u.username }}')">change password</button>
+        {% if u.username != current_user %}
+        <button class="btn sm danger" onclick="deleteUser('{{ u.username }}')"
+          hx-confirm="Delete user {{ u.username }}?">delete</button>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <div class="card-head"><div class="card-title">Add user</div></div>
+  <div class="card-body">
+    <form onsubmit="addUser(event)" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        <label style="font-size:11px;color:var(--af-text-mute);">Username</label>
+        <input id="new-username" required style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:8px 12px;color:var(--af-text);min-width:200px;">
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        <label style="font-size:11px;color:var(--af-text-mute);">Password</label>
+        <input id="new-password" type="password" required style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:8px 12px;color:var(--af-text);min-width:200px;">
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        <label style="font-size:11px;color:var(--af-text-mute);">Role</label>
+        <select id="new-role" style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:8px 12px;color:var(--af-text);">
+          {% for r in roles %}<option value="{{ r }}" {% if r == 'operator' %}selected{% endif %}>{{ r }}</option>{% endfor %}
+        </select>
+      </div>
+      <button type="submit" class="btn primary">create</button>
+    </form>
+  </div>
+</div>
+
+<script>
+async function addUser(e) {
+  e.preventDefault();
+  const username = document.getElementById('new-username').value;
+  const password = document.getElementById('new-password').value;
+  const role = document.getElementById('new-role').value;
+  const r = await fetch('/api/users', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({username, password, role}), credentials:'same-origin',
+  });
+  if (r.ok) softReload(); else toast(await r.text(), 'err');
+}
+async function changePassword(username) {
+  const pw = prompt(`New password for ${username}:`);
+  if (!pw) return;
+  const r = await fetch(`/api/users/${username}/password`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({password: pw}), credentials:'same-origin',
+  });
+  toast(r.ok ? `password updated · ${username}` : 'failed', r.ok ? '' : 'err');
+}
+async function changeRole(username, role) {
+  const r = await fetch(`/api/users/${username}/role`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({role}), credentials:'same-origin',
+  });
+  toast(r.ok ? `role: ${role}` : 'failed', r.ok ? '' : 'err');
+}
+async function deleteUser(username) {
+  if (!confirm(`Delete ${username}?`)) return;
+  const r = await fetch(`/api/users/${username}`, {method:'DELETE', credentials:'same-origin'});
+  if (r.ok) softReload(); else toast(await r.text(), 'err');
+}
+</script>
+{% endblock %}

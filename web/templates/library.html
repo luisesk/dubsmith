@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% set active = "library" %}
+{% set page_title = "Library" %}
+{% block title %}Dubsmith · library{% endblock %}
+{% block body %}
+
+<div class="page-header">
+  <div>
+    <div class="page-eyebrow">{{ sections|length }} series tracked · {{ sections|sum(attribute='total') }} episodes</div>
+    <h1 class="page-title">Library</h1>
+  </div>
+  <div class="page-actions">
+    <a class="btn ghost" href="/shows">Manage shows</a>
+  </div>
+</div>
+
+<div class="chip-row">
+  <button class="chip active" onclick="filterDub('all', this)">All</button>
+  <button class="chip" onclick="filterDub('with', this)">Complete</button>
+  <button class="chip" onclick="filterDub('without', this)">Missing dub</button>
+</div>
+
+<div class="show-grid" id="show-grid">
+{% for sec in sections %}
+  {% set total = sec.dubbable_total %}
+  {% set with_pt = sec.with_pt %}
+  {% set pct = (100 * with_pt / total)|int if total > 0 else 100 %}
+  {% set missing = total - with_pt %}
+  <a class="show-card" href="/show/{{ sec.sid }}">
+    <div class="show-poster">
+      <img src="/api/poster/{{ sec.sid }}.jpg" alt="{{ sec.name }}" loading="lazy"
+        onerror="this.style.display='none'; this.nextElementSibling.style.display='grid';"
+        style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;">
+      <div class="initials" style="display:none;">
+        {{ sec.name.split(' ')[0][0]|upper }}{% if sec.name.split(' ')|length > 1 %}{{ sec.name.split(' ')[1][0]|upper }}{% endif %}
+      </div>
+      <div class="meta">{{ sec.total }} ep{% if sec.no_dub_total %} · {{ sec.no_dub_total }} no-dub{% endif %}</div>
+      {% if missing > 0 %}
+      <div class="badge"><span class="state-pill state-quarantined">{{ missing }} miss</span></div>
+      {% else %}
+      <div class="badge"><span class="state-pill state-done">complete</span></div>
+      {% endif %}
+    </div>
+    <div class="show-info">
+      <div class="show-title">{{ sec.name }}</div>
+      <div class="show-meta">id {{ sec.sid }} · {{ "ON" if sec.enabled else "OFF" }}</div>
+      <div class="cov-row">
+        <span class="lang-tag pt">PT</span>
+        <div class="progress"><div style="width:{{ pct }}%;background:var(--af-pt);"></div></div>
+        <span class="cov-pct">{{ pct }}%</span>
+      </div>
+    </div>
+  </a>
+{% endfor %}
+{% if not sections %}
+<div style="grid-column:1/-1;padding:2em;text-align:center;color:var(--af-text-mute);">No tracked shows. <a href="/shows">Add one</a>.</div>
+{% endif %}
+</div>
+
+<script>
+function filterDub(mode, btn) {
+  document.querySelectorAll('.show-card').forEach(c => {
+    const has = c.querySelector('.state-done') !== null;
+    if (mode === 'with' && !has) c.style.display = 'none';
+    else if (mode === 'without' && has) c.style.display = 'none';
+    else c.style.display = '';
+  });
+  document.querySelectorAll('.chip').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+</script>
+{% endblock %}

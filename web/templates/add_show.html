@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% set active = "shows" %}
+{% set page_title = "Configure show" %}
+{% block title %}Dubsmith · {{ series.title }}{% endblock %}
+{% block body %}
+
+<a href="/shows" style="color:var(--af-text-mute);font-size:12px;">‹ back to shows</a>
+
+<div style="position:relative;margin:.6em -22px 0;min-height:340px;border-radius:14px;overflow:hidden;border:1px solid var(--af-border);background:var(--af-bg-card);">
+  <!-- fanart background, full bleed -->
+  <div style="position:absolute;inset:0;background-image:url('/api/fanart/{{ series.id }}.jpg'),url('/api/poster/{{ series.id }}.jpg');background-size:cover;background-position:center 30%;"></div>
+  <!-- gradient overlay so text reads -->
+  <div style="position:absolute;inset:0;background:
+    linear-gradient(90deg, rgba(10,11,16,0.92) 0%, rgba(10,11,16,0.72) 40%, rgba(10,11,16,0.4) 100%),
+    linear-gradient(180deg, transparent 60%, rgba(10,11,16,0.95) 100%);"></div>
+  <div style="position:absolute;inset:0;background:radial-gradient(rgba(255,122,69,0.10) 1px, transparent 1.4px);background-size:10px 10px;mix-blend-mode:screen;"></div>
+  <div style="position:relative;display:flex;gap:22px;align-items:flex-end;padding:24px;min-height:340px;">
+    <div class="show-poster" style="width:160px;aspect-ratio:2/3;flex-shrink:0;border-radius:10px;box-shadow:var(--af-shadow-lg);">
+      <img src="/api/poster/{{ series.id }}.jpg" alt=""
+        onerror="this.style.display='none';this.nextElementSibling.style.display='grid';"
+        style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;">
+      <div class="initials" style="display:none;font-size:54px;">{{ series.title[0]|upper }}</div>
+    </div>
+    <div style="flex:1;min-width:0;">
+      <div style="font-size:11px;color:var(--af-text-mute);font-family:var(--af-font-mono);text-transform:uppercase;letter-spacing:.08em;display:flex;gap:10px;flex-wrap:wrap;">
+        <span>id {{ series.id }}</span>
+        {% if series.year %}<span>· {{ series.year }}</span>{% endif %}
+        {% if series.network %}<span>· {{ series.network }}</span>{% endif %}
+        {% if series.status %}<span>· {{ series.status }}</span>{% endif %}
+        {% if series.runtime %}<span>· {{ series.runtime }}m</span>{% endif %}
+        {% if series.ratings and series.ratings.value %}<span>· ★ {{ series.ratings.value }}</span>{% endif %}
+      </div>
+      <h1 style="margin:6px 0 0;font-size:36px;font-weight:800;font-family:var(--af-font-display);letter-spacing:-0.02em;line-height:1.05;color:#fff;text-shadow:0 2px 12px rgba(0,0,0,.6);">{{ series.title }}</h1>
+      {% if series.alternateTitles and series.alternateTitles[0].title != series.title %}
+      <div style="font-family:var(--af-font-jp);color:var(--af-text-mute);font-size:14px;margin-top:2px;">{{ series.alternateTitles[0].title }}</div>
+      {% endif %}
+      {% if series.genres %}
+      <div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;">
+        {% for g in series.genres[:5] %}
+        <span style="padding:3px 8px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);border-radius:99px;font-size:11px;color:var(--af-text-mute);">{{ g }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% if series.overview %}
+      <p style="margin:14px 0 0;font-size:13.5px;line-height:1.55;color:#d6d8e3;max-width:780px;">{{ series.overview|truncate(420, true, '…') }}</p>
+      {% endif %}
+      <div style="margin-top:12px;display:flex;gap:18px;align-items:center;font-size:12px;color:var(--af-text-mute);">
+        <div><b style="color:var(--af-text);">{{ sonarr_seasons|length }}</b> seasons</div>
+        <div><b style="color:var(--af-text);">{{ sonarr_seasons|sum(attribute='statistics.episodeCount') }}</b> eps on disk</div>
+        {% if series.tvdbId %}<div><a href="https://thetvdb.com/?id={{ series.tvdbId }}&tab=series" target="_blank" style="color:var(--af-text-mute);">TVDB ›</a></div>{% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{% set lang_options = [
+  ('por','Portuguese (BR)','pt-BR'),
+  ('eng','English','en'),
+  ('spa','Spanish (LatAm)','es-419'),
+  ('fra','French','fr'),
+  ('deu','German','de'),
+  ('ita','Italian','it'),
+] %}
+
+<div class="card" style="margin-top:1em;">
+  <div class="card-head"><div class="card-title">Target language</div></div>
+  <div class="card-body">
+    <div style="color:var(--af-text-mute);font-size:12px;margin-bottom:10px;">Audio track to download and inject. mdnx language codes used.</div>
+    <div class="chip-row" id="lang-chips">
+      {% for code, label, _flag in lang_options %}
+      <button class="chip {% if (existing.target_audio or 'por') == code %}active{% endif %}"
+        onclick="pickLang('{{ code }}', this)">{{ label }}</button>
+      {% endfor %}
+    </div>
+    <input type="hidden" id="target_audio" value="{{ existing.target_audio or 'por' }}">
+    <input type="hidden" id="cr_dub_lang" value="{{ existing.cr_dub_lang or 'por' }}">
+  </div>
+</div>
+
+<div class="card" style="margin-top:1em;">
+  <div class="card-head">
+    <div class="card-title">Crunchyroll search · "{{ series.title }}"</div>
+  </div>
+  <div class="card-body">
+    {% if not cr_results %}
+    <div style="color:var(--af-text-mute);font-size:12px;margin-bottom:10px;">No CR results. Search by alt title:</div>
+    <form hx-get="/api/shows/search" hx-target="#cr-extra" hx-swap="innerHTML" style="display:flex;gap:.5em;">
+      <input name="q" placeholder="alt title (e.g. romaji)" required style="flex:1;padding:6px 10px;background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;color:var(--af-text);">
+      <button type="submit" class="btn primary">search</button>
+    </form>
+    <div id="cr-extra"></div>
+    {% else %}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:14px;">
+    {% for show in cr_results %}
+    <div style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:8px;padding:12px;">
+      <div style="font-weight:600;font-size:13px;">{{ show.title }} <code style="color:var(--af-text-dim);font-size:11px;">{{ show.show_id }}</code></div>
+      <div style="margin-top:8px;display:flex;flex-direction:column;gap:6px;">
+        {% for s in show.seasons %}
+        <div style="display:flex;gap:8px;align-items:center;font-size:12px;padding:6px;background:var(--af-bg-card);border-radius:6px;">
+          <code style="font-size:11px;color:var(--af-text-mute);">{{ s.cr_season_id }}</code>
+          <span style="flex:1;">{{ s.name }}</span>
+          {% set has_dub = false %}
+          {% for l in s.dub_langs %}
+            {% if l in ('pt-BR','en','es-419','fr','de','it') %}<span class="lang-tag {% if l=='pt-BR' %}pt{% elif l=='en' %}en{% elif l=='es-419' %}es{% else %}ja{% endif %}" title="{{ l }}">{{ l|upper }}</span>{% endif %}
+          {% endfor %}
+          <button class="btn sm" onclick="copyToMapping('{{ s.cr_season_id }}')">use</button>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card" style="margin-top:1em;">
+  <div class="card-head"><div class="card-title">Map seasons</div></div>
+  <div class="card-body">
+    <table>
+      <thead><tr><th>Sonarr season</th><th>Eps</th><th>CR season ID</th><th>Probe</th><th>Offset</th></tr></thead>
+      <tbody>
+      {% for s in sonarr_seasons %}
+        <tr>
+          <td>S{{ "%02d"|format(s.seasonNumber) }}</td>
+          <td style="color:var(--af-text-mute);font-family:var(--af-font-mono);font-size:11px;">{{ s.statistics.episodeCount }}/{{ s.statistics.totalEpisodeCount }}</td>
+          <td><input class="cr-input" data-season="{{ s.seasonNumber }}" name="cr_{{ s.seasonNumber }}"
+            value="{{ (existing.cr_seasons or {}).get(s.seasonNumber|string, '') }}"
+            placeholder="GR49C7EPD"
+            style="width:14em;background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:6px 10px;color:var(--af-text);font-family:var(--af-font-mono);font-size:12px;"></td>
+          <td>
+            <button class="btn sm ghost" onclick="probeSeason({{ s.seasonNumber }})" type="button">probe</button>
+            <span id="probe-{{ s.seasonNumber }}" style="font-family:var(--af-font-mono);font-size:11px;color:var(--af-text-mute);margin-left:6px;"></span>
+          </td>
+          <td><input name="off_{{ s.seasonNumber }}"
+            value="{{ (existing.season_offset or {}).get(s.seasonNumber|string, '') }}"
+            placeholder="0" type="number"
+            style="width:5em;background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:6px 10px;color:var(--af-text);"></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <div style="margin-top:14px;display:flex;gap:8px;">
+      <button class="btn primary" onclick="saveMapping()">save mapping</button>
+      <a class="btn ghost" href="/shows">cancel</a>
+    </div>
+  </div>
+</div>
+
+<script>
+function pickLang(code, btn) {
+  document.getElementById('target_audio').value = code;
+  document.getElementById('cr_dub_lang').value = code;
+  btn.parentElement.querySelectorAll('.chip').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+function copyToMapping(crSeasonId) {
+  const inputs = document.querySelectorAll('.cr-input');
+  for (const inp of inputs) {
+    if (!inp.value) { inp.value = crSeasonId; inp.focus(); return; }
+  }
+  alert('All season slots filled. Edit existing if needed.');
+}
+async function probeSeason(season) {
+  const inp = document.querySelector(`.cr-input[data-season="${season}"]`);
+  const out = document.getElementById(`probe-${season}`);
+  if (!inp.value) { out.textContent = '(set CR id first)'; return; }
+  out.textContent = 'probing…';
+  try {
+    const r = await fetch(`/api/cr/season/${inp.value}/dubs`, {credentials:'same-origin'});
+    if (!r.ok) { out.textContent = 'error'; return; }
+    const d = await r.json();
+    if (!d.dubs.length) { out.textContent = 'no dubs found'; out.style.color = 'var(--af-warn)'; return; }
+    out.innerHTML = d.dubs.map(l => `<span class="lang-tag ${l==='pt-BR'?'pt':l==='en'?'en':l==='es-419'?'es':'ja'}">${l}</span>`).join(' ');
+  } catch (e) { out.textContent = 'failed'; }
+}
+async function saveMapping() {
+  const cr_seasons = {};
+  const season_offset = {};
+  document.querySelectorAll('.cr-input').forEach(inp => {
+    const v = inp.value.trim();
+    if (v) cr_seasons[inp.dataset.season] = v;
+  });
+  document.querySelectorAll('input[name^="off_"]').forEach(inp => {
+    const v = parseInt(inp.value, 10);
+    if (v) season_offset[inp.name.replace('off_','')] = v;
+  });
+  const r = await fetch('/api/shows/quick-add', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    credentials: 'same-origin',
+    body: JSON.stringify({
+      sonarr_id: {{ series.id }},
+      name: {{ series.title|tojson }},
+      cr_seasons, season_offset,
+      target_audio: document.getElementById('target_audio').value,
+      cr_dub_lang: document.getElementById('cr_dub_lang').value,
+    }),
+  });
+  if (r.ok) { location.href = '/shows'; }
+  else { alert('save failed: ' + (await r.text())); }
+}
+</script>
+{% endblock %}

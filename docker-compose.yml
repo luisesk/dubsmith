@@ -1,0 +1,48 @@
+# Dubsmith — example compose file.
+#
+# Mount your media library at /library (the same path Sonarr uses for filenames),
+# pick a TZ, set api.user/password in data/config.yml, then:
+#
+#   docker compose up -d
+#
+# The web UI is at http://localhost:8080.
+#
+# For shared NFS / SMB / etc., create a named volume — see commented example below.
+
+services:
+  dubsmith:
+    # Pull from registry by default. Comment-out the next line and
+    # uncomment `build: .` below to build locally from source.
+    image: ghcr.io/luisesk/dubsmith:latest
+    # build: .
+    container_name: dubsmith
+    user: "1000:1000"                # match your media library uid:gid
+    environment:
+      - TZ=Etc/UTC                   # set your timezone (e.g. America/Sao_Paulo)
+    volumes:
+      - ./data:/data                 # config, queue.db, sources.yml, users.yml, widevine, staging
+      - /path/to/your/media:/library:rw   # mount where Sonarr writes files
+    ports:
+      - "8080:8080"
+    command: ["daemon"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+
+# --- example: NFS-mounted library ---
+# volumes:
+#   media:
+#     driver: local
+#     driver_opts:
+#       type: nfs
+#       o: "addr=YOUR_NAS_IP,nfsvers=4,rw"
+#       device: ":/path/exported/by/nas"
+#
+# Then in the dubsmith service, replace the /library bind with:
+#       - media:/library

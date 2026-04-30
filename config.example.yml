@@ -1,0 +1,67 @@
+# Dubsmith configuration — copy to data/config.yml and edit.
+# Most settings are also configurable via the Settings page in the web UI;
+# values in this file are bootstrap defaults / fallback when settings.yml has none.
+
+sonarr:
+  # Recommended: set these via the Settings → Sonarr UI (stored in data/settings.yml).
+  # The values below are used only as fallback if the Settings page is empty.
+  url:                            # e.g. http://sonarr:8989
+  api_key:                        # 32-char API key from Sonarr Settings → General
+
+# Plex integration (optional — used for partial library scan after mux)
+plex:
+  url:                            # e.g. http://plex:32400
+  token:                          # X-Plex-Token from any Plex API call
+  library_section_id: 0           # numeric id of the Anime/TV library
+
+# Push notifications via ntfy (optional)
+ntfy:
+  url:                            # e.g. https://ntfy.example.com
+  topic:                          # topic name to publish to
+  token:                          # optional bearer token if topic auth-protected
+
+# Path mapping between Sonarr's view of the world and the Dubsmith container.
+# Sonarr sees files at sonarr_prefix; Dubsmith mounts the same library at library_in_container.
+paths:
+  library_in_container: /library  # this container's mount point for the media library
+  staging: /data/staging          # transient downloads (per-job dirs, cleaned post-mux)
+
+paths_extra:
+  sonarr_prefix: /downloads       # Sonarr's "rootFolderPath" (e.g. /tv, /downloads, /media)
+
+# Default audio language for new shows (per-show overrides via UI).
+target_language:
+  audio: por                      # ISO-639-2 code muxed into mkv (por, eng, spa, fra, deu, ita)
+  audio_label: "Portuguese Brazil"
+  cr_dub_lang: por                # mdnx --dubLang value
+  cr_sub_lang: por                # mdnx --dlsubs value
+
+# Sync detection thresholds.
+sync:
+  trim_seconds: 120               # seconds of audio analyzed for cross-correlation
+  bound_seconds: 15               # max plausible offset to search (+/- N seconds)
+  min_score: 10                   # below this score → quarantine instead of mux
+  max_abs_delay_ms: 14000         # reject if detected offset exceeds this
+
+# Background scheduler.
+scheduler:
+  scan_interval_hours: 6          # re-scan all tracked shows for missing dubs
+  retry_interval_hours: 1          # reset failed jobs back to pending
+  max_attempts: 3                  # max retries before permanent fail
+
+# Worker concurrency (also editable from Settings → Concurrency).
+# Applied at container startup.
+concurrency:
+  downloads: 2                    # parallel mdnx invocations
+  muxes: 1
+  sync: 2
+
+# Web UI auth — first-run bootstrap admin. Change after first login.
+api:
+  port: 8080
+  user: admin
+  password: change-me-on-first-login
+
+# Widevine CDM directory (mounted from host).
+# Place device_client_id_blob.bin + device_private_key.pem here.
+widevine_dir: /data/widevine

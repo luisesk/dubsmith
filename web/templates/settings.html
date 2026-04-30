@@ -1,0 +1,354 @@
+{% extends "base.html" %}
+{% set active = "settings" %}
+{% set page_title = "Settings" %}
+{% block title %}Dubsmith · settings{% endblock %}
+{% block body %}
+
+<div class="page-header">
+  <div>
+    <div class="page-eyebrow">configuration</div>
+    <h1 class="page-title">Settings</h1>
+    <div style="color:var(--af-text-mute);margin-top:4px;font-size:13px;">Sources, sync detection, library paths.</div>
+  </div>
+  <div class="page-actions">
+    <a class="btn ghost" href="/users">Users ›</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><div class="card-title">Sources</div></div>
+  <div class="card-body" style="display:flex;flex-direction:column;gap:10px;">
+  {% for key, src in sources.items() %}
+    <div style="display:flex;align-items:center;gap:14px;padding:14px;border-radius:10px;border:1px solid var(--af-border);background:var(--af-bg-input);">
+      <div style="width:42px;height:42px;border-radius:10px;display:grid;place-items:center;
+        background:{% if key=='crunchyroll' %}#ff7a45{% elif key=='hidive' %}#a78bfa{% else %}#22d3ee{% endif %};
+        color:white;font-weight:800;font-family:var(--af-font-display);font-size:18px;">
+        {{ src.name[0] }}
+      </div>
+      <div style="flex:1;">
+        <div style="font-weight:600;font-size:14px;">{{ src.name }}</div>
+        <div style="font-family:var(--af-font-mono);font-size:11px;color:var(--af-text-dim);">
+          {% if src.connected %}{{ src.user }}@host{% else %}—{% endif %} ·
+          {{ src.languages|join(' · ') }}
+        </div>
+      </div>
+      <div>
+        {% if src.connected %}
+        <span class="state-pill state-done">CONNECTED</span>
+        {% else %}
+        <span class="state-pill state-failed">DISCONNECTED</span>
+        {% endif %}
+      </div>
+      <div>
+        {% if src.connected %}
+        <button class="btn ghost" onclick="disconnectSource('{{ key }}')">Disconnect</button>
+        {% else %}
+        <button class="btn primary" onclick="openConnect('{{ key }}', '{{ src.name }}')">Connect</button>
+        {% endif %}
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div class="card-title">Sonarr integration</div>
+    <span class="card-action" id="sonarr-status">—</span>
+  </div>
+  <div class="card-body">
+    <div style="display:grid;grid-template-columns:120px 1fr;gap:10px;align-items:center;padding:8px 0;">
+      <label style="font-weight:600;font-size:13px;">URL</label>
+      <input id="sonarr-url" type="text" placeholder="http://sonarr:8989" value="{{ settings.sonarr.url or '' }}"
+        style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:8px 12px;color:var(--af-text);">
+    </div>
+    <div style="display:grid;grid-template-columns:120px 1fr;gap:10px;align-items:center;padding:8px 0;">
+      <label style="font-weight:600;font-size:13px;">API key</label>
+      <input id="sonarr-key" type="password" placeholder="32-char hex"
+        value="{{ settings.sonarr.api_key or '' }}"
+        style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:8px 12px;color:var(--af-text);font-family:var(--af-font-mono);font-size:12px;">
+    </div>
+    <div style="display:flex;gap:8px;padding:8px 0 14px;">
+      <button class="btn primary" onclick="testSonarr()">Test connection</button>
+      <button class="btn" onclick="saveSonarrCreds()">Save</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;padding:10px 0;border-top:1px solid var(--af-border);">
+      <div>
+        <div style="font-weight:600;">Unmonitor episode after mux</div>
+        <div style="color:var(--af-text-mute);font-size:12px;">Prevents Sonarr from grabbing a "better" release that overwrites the muxed file.</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" {% if settings.sonarr.unmonitor_after_mux %}checked{% endif %}
+          onchange="setSonarr('unmonitor_after_mux', this.checked)">
+        <span></span>
+      </label>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;padding:10px 0;border-top:1px solid var(--af-border);">
+      <div>
+        <div style="font-weight:600;">Rescan series after mux</div>
+        <div style="color:var(--af-text-mute);font-size:12px;">Refresh Sonarr's DB so it sees the new filename + audio tracks.</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" {% if settings.sonarr.rescan_after_mux %}checked{% endif %}
+          onchange="setSonarr('rescan_after_mux', this.checked)">
+        <span></span>
+      </label>
+    </div>
+    <div style="display:grid;grid-template-columns:120px 1fr auto;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--af-border);">
+      <label style="font-weight:600;font-size:13px;">Webhook secret</label>
+      <input id="sonarr-wh-secret" type="password" placeholder="(leave empty to disable)"
+        value="{{ settings.sonarr.webhook_secret or '' }}"
+        style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:8px 12px;color:var(--af-text);font-family:var(--af-font-mono);font-size:12px;">
+      <button class="btn sm" onclick="setSonarr('webhook_secret', document.getElementById('sonarr-wh-secret').value)">save</button>
+    </div>
+    <div style="color:var(--af-text-mute);font-size:11px;padding:0 0 6px 130px;">
+      Configure Sonarr → Settings → Connect → Webhook with header <code>X-Webhook-Secret: &lt;secret&gt;</code>.
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head">
+    <div class="card-title">Library server (Plex / Jellyfin)</div>
+    <span class="card-action" id="ls-status">—</span>
+  </div>
+  <div class="card-body">
+    <div style="display:grid;grid-template-columns:120px 1fr;gap:10px;align-items:center;padding:8px 0;">
+      <label style="font-weight:600;font-size:13px;">Type</label>
+      <div class="chip-row">
+        {% for opt in ['plex','jellyfin'] %}
+        <button class="chip {% if (settings.library_server.type or 'plex') == opt %}active{% endif %}"
+          onclick="setLibraryType('{{ opt }}', this)">{{ opt }}</button>
+        {% endfor %}
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:120px 1fr;gap:10px;align-items:center;padding:8px 0;">
+      <label style="font-weight:600;font-size:13px;">URL</label>
+      <input id="ls-url" type="text" placeholder="http://plex:32400 or http://jellyfin:8096"
+        value="{{ settings.library_server.url or '' }}"
+        style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:8px 12px;color:var(--af-text);">
+    </div>
+    <div style="display:grid;grid-template-columns:120px 1fr;gap:10px;align-items:center;padding:8px 0;">
+      <label style="font-weight:600;font-size:13px;">Token / API key</label>
+      <input id="ls-token" type="password" placeholder="X-Plex-Token or Jellyfin API key"
+        value="{{ settings.library_server.token or '' }}"
+        style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:8px 12px;color:var(--af-text);font-family:var(--af-font-mono);font-size:12px;">
+    </div>
+    <div style="display:grid;grid-template-columns:120px 1fr;gap:10px;align-items:center;padding:8px 0;">
+      <label style="font-weight:600;font-size:13px;">Section ID</label>
+      <input id="ls-section" type="text" placeholder="(plex only — section number)"
+        value="{{ settings.library_server.section_id or '' }}"
+        style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:8px 12px;color:var(--af-text);">
+    </div>
+    <div style="display:flex;gap:8px;padding:8px 0;">
+      <button class="btn primary" onclick="saveLibrary()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><div class="card-title">Sync detection</div></div>
+  <div class="card-body">
+    <div style="display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;padding:10px 0;">
+      <div>
+        <div style="font-weight:600;">Algorithm</div>
+        <div style="color:var(--af-text-mute);font-size:12px;">Cross-correlation finds the audio offset against your video.</div>
+      </div>
+      <div class="chip-row">
+        {% for opt in ['cross-corr','silence-detect','manual'] %}
+        <button class="chip {% if settings.sync.algorithm == opt %}active{% endif %}"
+          onclick="setSync('algorithm', '{{ opt }}', this)">{{ opt }}</button>
+        {% endfor %}
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;padding:10px 0;border-top:1px solid var(--af-border);">
+      <div>
+        <div style="font-weight:600;">Confidence threshold</div>
+        <div style="color:var(--af-text-mute);font-size:12px;">Tracks below this aren't auto-selected.</div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;">
+        <input type="range" min="0" max="100" value="{{ settings.sync.confidence_threshold }}"
+          oninput="document.getElementById('thr-val').textContent = this.value + '%';"
+          onchange="setSync('confidence_threshold', parseInt(this.value))" style="width:200px;">
+        <span id="thr-val" style="font-family:var(--af-font-mono);min-width:48px;text-align:right;">{{ settings.sync.confidence_threshold }}%</span>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;padding:10px 0;border-top:1px solid var(--af-border);">
+      <div>
+        <div style="font-weight:600;">Auto-mux when ≥ threshold</div>
+        <div style="color:var(--af-text-mute);font-size:12px;">Skip manual review for high-confidence matches.</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" {% if settings.sync.auto_mux %}checked{% endif %}
+          onchange="setSync('auto_mux', this.checked)">
+        <span></span>
+      </label>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;padding:10px 0;border-top:1px solid var(--af-border);">
+      <div>
+        <div style="font-weight:600;">Keep original audio</div>
+        <div style="color:var(--af-text-mute);font-size:12px;">Re-mux always preserves Japanese audio if present.</div>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" {% if settings.sync.keep_original_audio %}checked{% endif %}
+          onchange="setSync('keep_original_audio', this.checked)">
+        <span></span>
+      </label>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><div class="card-title">Concurrency</div><span class="card-action">applied on container restart</span></div>
+  <div class="card-body">
+    {% for k, label in [('downloads','Downloads'),('muxes','Mux jobs'),('sync','Sync analysis')] %}
+    <div style="display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;padding:10px 0;{% if not loop.first %}border-top:1px solid var(--af-border);{% endif %}">
+      <div style="font-weight:600;">{{ label }}</div>
+      <input type="number" min="1" max="10" value="{{ settings.concurrency[k] }}"
+        onchange="setConcurrency('{{ k }}', parseInt(this.value))"
+        style="width:80px;background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:6px 10px;color:var(--af-text);font-family:var(--af-font-mono);">
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- Connect modal -->
+<div id="connect-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center;">
+  <div style="background:var(--af-bg-card);border:1px solid var(--af-border);border-radius:12px;padding:24px;width:420px;">
+    <h2 style="margin:0 0 16px;font-size:18px;">Connect <span id="connect-name"></span></h2>
+    <form onsubmit="submitConnect(event)" style="display:flex;flex-direction:column;gap:10px;">
+      <input type="hidden" id="connect-key" value="">
+      <input type="text" id="connect-user" placeholder="email or username" required
+        style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:8px 12px;color:var(--af-text);">
+      <input type="password" id="connect-pass" placeholder="password" required
+        style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:8px 12px;color:var(--af-text);">
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:8px;">
+        <button type="button" class="btn ghost" onclick="closeConnect()">Cancel</button>
+        <button type="submit" class="btn primary" id="connect-submit">Connect</button>
+      </div>
+      <div id="connect-status" style="font-size:12px;color:var(--af-text-mute);"></div>
+    </form>
+  </div>
+</div>
+
+<style>
+.toggle { display:inline-block; position:relative; width:42px; height:24px; }
+.toggle input { opacity:0; width:0; height:0; }
+.toggle span { position:absolute; cursor:pointer; inset:0; background:var(--af-border); border-radius:99px; transition:.2s; }
+.toggle span:before { content:''; position:absolute; height:18px; width:18px; left:3px; bottom:3px; background:white; border-radius:99px; transition:.2s; }
+.toggle input:checked + span { background:var(--af-accent); }
+.toggle input:checked + span:before { transform:translateX(18px); }
+</style>
+
+<script>
+function openConnect(key, name) {
+  document.getElementById('connect-key').value = key;
+  document.getElementById('connect-name').textContent = name;
+  document.getElementById('connect-status').textContent = '';
+  document.getElementById('connect-modal').style.display = 'flex';
+}
+function closeConnect() { document.getElementById('connect-modal').style.display = 'none'; }
+async function submitConnect(e) {
+  e.preventDefault();
+  const key = document.getElementById('connect-key').value;
+  const username = document.getElementById('connect-user').value;
+  const password = document.getElementById('connect-pass').value;
+  const status = document.getElementById('connect-status');
+  const btn = document.getElementById('connect-submit');
+  btn.disabled = true; btn.textContent = 'Authenticating…';
+  status.style.color = 'var(--af-text-mute)';
+  status.textContent = 'Calling mdnx…';
+  try {
+    const r = await fetch(`/api/sources/${key}/connect`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username, password}),
+      credentials: 'same-origin',
+    });
+    if (r.ok) softReload();
+    else {
+      status.style.color = 'var(--af-danger)';
+      status.textContent = (await r.text()).slice(0, 200);
+      btn.disabled = false; btn.textContent = 'Connect';
+    }
+  } catch (err) {
+    status.style.color = 'var(--af-danger)'; status.textContent = err.message;
+    btn.disabled = false; btn.textContent = 'Connect';
+  }
+}
+async function disconnectSource(key) {
+  if (!confirm(`Disconnect ${key}?`)) return;
+  await fetch(`/api/sources/${key}/disconnect`, {method:'POST', credentials:'same-origin'});
+  softReload();
+}
+async function setSync(field, value, btn) {
+  if (btn) {
+    btn.parentElement.querySelectorAll('.chip').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+  }
+  const r = await fetch('/api/settings/sync', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({[field]: value}), credentials:'same-origin',
+  });
+  toast(r.ok ? `saved · ${field}` : 'save failed', r.ok ? '' : 'err');
+}
+async function testSonarr() {
+  const url = document.getElementById('sonarr-url').value;
+  const api_key = document.getElementById('sonarr-key').value;
+  const s = document.getElementById('sonarr-status');
+  s.textContent = 'testing…'; s.style.color = 'var(--af-text-mute)';
+  const r = await fetch('/api/sonarr/test', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({url, api_key}), credentials:'same-origin',
+  });
+  const d = await r.json();
+  if (d.ok) { s.textContent = `✓ Sonarr v${d.version}`; s.style.color = 'var(--af-success)'; }
+  else { s.textContent = `✗ ${d.error || 'connection failed'}`.slice(0, 60); s.style.color = 'var(--af-danger)'; }
+}
+async function saveSonarrCreds() {
+  const url = document.getElementById('sonarr-url').value;
+  const api_key = document.getElementById('sonarr-key').value;
+  const r = await fetch('/api/settings/sonarr', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({url, api_key}), credentials:'same-origin',
+  });
+  toast(r.ok ? 'Sonarr creds saved' : 'save failed', r.ok ? '' : 'err');
+}
+async function setSonarr(field, value) {
+  const r = await fetch('/api/settings/sonarr', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({[field]: value}), credentials:'same-origin',
+  });
+  toast(r.ok ? `saved · ${field}` : 'save failed', r.ok ? '' : 'err');
+}
+async function setConcurrency(field, value) {
+  const r = await fetch('/api/settings/concurrency', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({[field]: value}), credentials:'same-origin',
+  });
+  toast(r.ok ? `saved · ${field}` : 'save failed', r.ok ? '' : 'err');
+}
+let _libType = "{{ settings.library_server.type or 'plex' }}";
+function setLibraryType(t, btn) {
+  _libType = t;
+  if (btn) {
+    btn.parentElement.querySelectorAll('.chip').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+  }
+}
+async function saveLibrary() {
+  const payload = {
+    type: _libType,
+    url: document.getElementById('ls-url').value,
+    token: document.getElementById('ls-token').value,
+    section_id: document.getElementById('ls-section').value,
+  };
+  const r = await fetch('/api/settings/library_server', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload), credentials:'same-origin',
+  });
+  const s = document.getElementById('ls-status');
+  if (r.ok) { s.textContent = '✓ saved'; s.style.color = 'var(--af-success)'; toast('library server saved'); }
+  else { s.textContent = '✗ failed'; s.style.color = 'var(--af-danger)'; toast(await r.text(), 'err'); }
+}
+</script>
+{% endblock %}

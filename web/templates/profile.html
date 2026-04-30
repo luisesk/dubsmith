@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% set active = "settings" %}
+{% set page_title = "Profile" %}
+{% block title %}Dubsmith · profile{% endblock %}
+{% block body %}
+
+<div class="page-header">
+  <div>
+    <div class="page-eyebrow">my account</div>
+    <h1 class="page-title">{{ current_user }}</h1>
+    <div style="color:var(--af-text-mute);margin-top:4px;font-size:13px;">role: <code>{{ role }}</code></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-head"><div class="card-title">Change password</div></div>
+  <div class="card-body">
+    <form onsubmit="changeMyPw(event)" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;max-width:600px;">
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        <label style="font-size:11px;color:var(--af-text-mute);">Current password</label>
+        <input id="cur-pw" type="password" required style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:8px 12px;color:var(--af-text);min-width:220px;">
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px;">
+        <label style="font-size:11px;color:var(--af-text-mute);">New password (≥ 8 chars)</label>
+        <input id="new-pw" type="password" required minlength="8" style="background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:8px 12px;color:var(--af-text);min-width:220px;">
+      </div>
+      <button type="submit" class="btn primary">update</button>
+    </form>
+    <div id="pw-msg" style="margin-top:10px;font-size:13px;"></div>
+  </div>
+</div>
+
+<script>
+async function changeMyPw(e) {
+  e.preventDefault();
+  const current_password = document.getElementById('cur-pw').value;
+  const password = document.getElementById('new-pw').value;
+  const r = await fetch('/api/users/me/password', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({current_password, password}), credentials:'same-origin',
+  });
+  const msg = document.getElementById('pw-msg');
+  if (r.ok) {
+    msg.style.color = 'var(--af-success, #4ade80)';
+    msg.textContent = 'password updated';
+    document.getElementById('cur-pw').value = '';
+    document.getElementById('new-pw').value = '';
+  } else {
+    const t = await r.text();
+    msg.style.color = 'var(--af-danger, #f87171)';
+    msg.textContent = 'failed: ' + t;
+  }
+}
+</script>
+{% endblock %}

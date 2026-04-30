@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% set active = "logs" %}
+{% set page_title = "Logs" %}
+{% block title %}Dubsmith · logs{% endblock %}
+{% block body %}
+<div class="page-header">
+  <div>
+    <div class="page-eyebrow">live container stdout</div>
+    <h1 class="page-title">Logs</h1>
+  </div>
+</div>
+<div class="card">
+  <div class="card-head"><div class="card-title">tail · refresh 5s</div><span class="card-action" style="font-family:var(--af-font-mono);">docker logs -f plex-dub</span></div>
+  <pre id="logbox" hx-get="/api/logs.txt?lines=300" hx-trigger="load, every 5s" hx-swap="innerHTML"
+    style="margin:0;padding:1em;overflow:auto;max-height:75vh;font-family:var(--af-font-mono);font-size:11.5px;line-height:1.5;color:var(--af-text);background:var(--af-bg-input);white-space:pre-wrap;word-break:break-word;">
+loading…
+  </pre>
+</div>
+{% endblock %}

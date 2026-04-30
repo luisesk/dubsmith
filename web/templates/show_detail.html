@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% set active = "library" %}
+{% block title %}Dubsmith · {{ series.title }}{% endblock %}
+{% block body %}
+
+<div style="position:relative;margin:-22px -22px 0;min-height:300px;border-bottom:1px solid var(--af-border);overflow:hidden;background:var(--af-bg-card);">
+  <div style="position:absolute;inset:0;background-image:url('/api/fanart/{{ sid }}.jpg'),url('/api/poster/{{ sid }}.jpg');background-size:cover;background-position:center 30%;"></div>
+  <div style="position:absolute;inset:0;background:linear-gradient(90deg,rgba(10,11,16,0.92) 0%,rgba(10,11,16,0.7) 40%,rgba(10,11,16,0.35) 100%),linear-gradient(180deg,transparent 55%,rgba(10,11,16,0.95) 100%);"></div>
+  <div style="position:relative;display:flex;gap:22px;align-items:flex-end;padding:22px;min-height:300px;">
+    <a href="/library" class="icon-btn" style="position:absolute;top:14px;left:14px;background:rgba(0,0,0,0.4);border-color:rgba(255,255,255,0.15);color:#fff;">‹</a>
+    <div class="show-poster" style="width:140px;aspect-ratio:2/3;flex-shrink:0;border-radius:10px;box-shadow:var(--af-shadow-lg);">
+      <img src="/api/poster/{{ sid }}.jpg" alt=""
+        onerror="this.style.display='none';this.nextElementSibling.style.display='grid';"
+        style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;">
+      <div class="initials" style="display:none;font-size:48px;">{{ series.title[0]|upper }}</div>
+    </div>
+    <div style="flex:1;min-width:0;">
+      <div style="font-size:11px;color:var(--af-text-mute);font-family:var(--af-font-mono);text-transform:uppercase;letter-spacing:.08em;display:flex;gap:10px;flex-wrap:wrap;">
+        <span>id {{ sid }}</span>
+        {% if series.year %}<span>· {{ series.year }}</span>{% endif %}
+        {% if series.network %}<span>· {{ series.network }}</span>{% endif %}
+        <span style="padding:2px 6px;border:1px solid color-mix(in oklab,var(--af-accent) 50%,transparent);color:var(--af-accent);border-radius:4px;transform:rotate(-3deg);font-weight:700;display:inline-block;">SCANNED</span>
+      </div>
+      <h1 style="margin:6px 0 0;font-size:32px;font-weight:800;font-family:var(--af-font-display);letter-spacing:-0.02em;line-height:1.05;color:#fff;text-shadow:0 2px 12px rgba(0,0,0,.6);">{{ series.title }}</h1>
+      {% if series.alternateTitles and series.alternateTitles[0].title != series.title %}
+      <div style="font-family:var(--af-font-jp);color:var(--af-text-mute);font-size:13px;margin-top:1px;">{{ series.alternateTitles[0].title }}</div>
+      {% endif %}
+      {% if series.overview %}
+      <p style="margin:10px 0 0;font-size:13px;line-height:1.5;color:#cdd0dc;max-width:720px;">{{ series.overview|truncate(280, true, '…') }}</p>
+      {% endif %}
+      <div style="margin-top:12px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-size:12px;color:var(--af-text-mute);">
+        <div><b style="color:var(--af-text);">{{ rows|length }}</b> episodes</div>
+        <div><b style="color:var(--af-text);">{{ rows|selectattr('has_pt')|list|length }}</b> dubbed</div>
+        <div><b style="color:var(--af-text);">{{ rows|rejectattr('cr_mapped')|list|length }}</b> no-dub</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:flex-start;flex-direction:column;">
+      <button class="btn primary" onclick="enqueueAll()">⬇ Enqueue full show</button>
+      <button class="btn ghost" hx-post="/scan/{{ sid }}" hx-swap="none" onclick="setTimeout(()=>softReload(),500)">⟲ Rescan</button>
+      <a class="btn ghost" href="/shows/add/{{ sid }}">Edit mapping</a>
+    </div>
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:1.5fr 1fr;gap:16px;margin-top:22px;">
+  {% set ns = namespace(seasons={}) %}
+  {% for r in rows %}
+    {% set _ = ns.seasons.setdefault(r.season, []).append(r) %}
+  {% endfor %}
+  <div style="display:flex;flex-direction:column;gap:14px;">
+  {% for season, eps in ns.seasons.items()|sort %}
+  <div class="card">
+    <div class="card-head" style="gap:10px;">
+      <div class="card-title">Season {{ "%02d"|format(season) }} <span style="color:var(--af-text-mute);font-weight:500;font-size:11px;margin-left:6px;">{{ eps|length }} eps · {{ eps|selectattr('has_pt')|list|length }} dubbed</span></div>
+      <button class="btn sm primary card-action" onclick="enqueueSeason({{ season }})">⬇ enqueue season</button>
+    </div>
+    {% for r in eps %}
+    <div onclick="selectEp({{ r.season }}, {{ r.episode }})" data-ep="{{ r.season }}-{{ r.episode }}"
+      style="display:grid;grid-template-columns:36px 1fr auto auto;gap:10px;padding:10px 16px;align-items:center;border-top:1px solid var(--af-border);cursor:pointer;">
+      <span style="font-family:var(--af-font-mono);font-size:11px;color:var(--af-text-dim);">{{ "%02d"|format(r.episode) }}</span>
+      <div>
+        <div style="font-size:13px;font-weight:600;">{{ r.title or 'TBA' }}</div>
+        <div style="font-family:var(--af-font-mono);font-size:10.5px;color:var(--af-text-dim);">
+          S{{ "%02d"|format(r.season) }}E{{ "%02d"|format(r.episode) }}
+          {% if r.queue %} · <span class="state-pill state-{{ r.queue['state'] }}">{{ r.queue['state'] }}</span>{% endif %}
+          {% if not r.cr_mapped %} · <span style="color:var(--af-text-dim);">no dub avail</span>{% endif %}
+        </div>
+      </div>
+      <div style="display:flex;gap:3px;align-items:center;">
+        {% for l in r.langs %}
+          {% if l == 'Japanese' %}<span class="lang-tag ja">JA</span>
+          {% elif l == 'English' %}<span class="lang-tag en">EN</span>
+          {% elif l == 'Portuguese' %}<span class="lang-tag pt">PT</span>
+          {% elif l == 'Spanish' %}<span class="lang-tag es">ES</span>
+          {% endif %}
+        {% endfor %}
+        <span style="width:6px;height:6px;border-radius:99px;margin-left:4px;
+          background:{% if r.has_pt %}var(--af-success){% elif not r.cr_mapped %}var(--af-text-dim){% elif r.queue and r.queue.state in ['downloading','syncing','muxing'] %}var(--af-info){% else %}var(--af-warn){% endif %};"></span>
+      </div>
+      <button class="btn sm ghost" onclick="event.stopPropagation();enqueueEp({{ r.season }}, {{ r.episode }})"
+        {% if not r.cr_mapped %}disabled style="opacity:.4;"{% endif %}>+</button>
+    </div>
+    {% endfor %}
+  </div>
+  {% endfor %}
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">Track picker</div>
+      <span class="card-action">live status</span>
+    </div>
+    <div class="card-body">
+      <div id="ep-info" style="display:none;">
+        <div style="font-family:var(--af-font-mono);font-size:10.5px;color:var(--af-text-dim);" id="ep-tag"></div>
+        <div style="font-size:18px;font-weight:700;margin-top:2px;" id="ep-title">—</div>
+        <div style="margin-top:14px;padding:14px;border-radius:10px;background:var(--af-bg-input);border:1px solid var(--af-border);" id="ep-status"></div>
+        <div style="margin-top:14px;display:flex;gap:8px;">
+          <button class="btn primary" id="ep-action">Enqueue</button>
+          <button class="btn ghost" id="ep-retry" style="display:none;">Retry</button>
+        </div>
+      </div>
+      <div id="ep-empty" style="text-align:center;padding:1.5em;color:var(--af-text-dim);font-size:13px;">
+        Click an episode to manage its dub.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const rows = {{ rows|tojson }};
+const sid = {{ sid }};
+
+async function enqueueAll() {
+  if (!confirm('Enqueue all eps in mapped seasons?')) return;
+  const r = await fetch(`/api/enqueue/series/${sid}`, {method:'POST', credentials:'same-origin'});
+  if (r.ok) { const d = await r.json(); toast(`enqueued ${d.enqueued}, skipped ${d.skipped}`); setTimeout(()=>softReload(), 800); }
+  else toast('failed', 'err');
+}
+async function enqueueSeason(season) {
+  const r = await fetch(`/api/enqueue/series/${sid}?season=${season}`, {method:'POST', credentials:'same-origin'});
+  if (r.ok) { const d = await r.json(); toast(`S${season}: enqueued ${d.enqueued}, skipped ${d.skipped}`); setTimeout(()=>softReload(), 800); }
+  else toast('failed', 'err');
+}
+async function enqueueEp(season, episode) {
+  const r = await fetch('/api/enqueue', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({series_id: sid, season, episode}),
+    credentials: 'same-origin',
+  });
+  if (r.ok) { toast(`S${season}E${episode} enqueued`); setTimeout(()=>softReload(), 600); }
+  else toast('failed', 'err');
+}
+function selectEp(season, episode) {
+  const r = rows.find(x => x.season === season && x.episode === episode);
+  if (!r) return;
+  document.querySelectorAll('[data-ep]').forEach(el => el.style.background = '');
+  const target = document.querySelector(`[data-ep="${season}-${episode}"]`);
+  if (target) target.style.background = 'var(--af-bg-active)';
+  document.getElementById('ep-empty').style.display = 'none';
+  document.getElementById('ep-info').style.display = 'block';
+  document.getElementById('ep-tag').textContent = `S${String(season).padStart(2,'0')}E${String(episode).padStart(2,'0')}`;
+  document.getElementById('ep-title').textContent = r.title || 'TBA';
+  let body = '';
+  if (!r.cr_mapped) {
+    body = `<div style="color:var(--af-text-mute);">Season ${season} not mapped to a Crunchyroll ID. <a href="/shows/add/${sid}">Edit mapping</a> to enable downloads.</div>`;
+    document.getElementById('ep-action').style.display = 'none';
+  } else if (r.has_pt) {
+    body = `<div style="color:var(--af-success);font-weight:600;">✓ Already has Portuguese audio</div><div style="font-family:var(--af-font-mono);font-size:11px;color:var(--af-text-mute);margin-top:4px;">${r.path}</div>`;
+    document.getElementById('ep-action').textContent = 'Re-process';
+    document.getElementById('ep-action').style.display = '';
+  } else if (r.queue) {
+    const q = r.queue;
+    body = `<div><span class="state-pill state-${q.state}">${q.state}</span> attempt ${q.attempts}</div>`;
+    if (q.sync_delay_ms !== null && q.sync_delay_ms !== undefined) {
+      body += `<div style="margin-top:8px;font-family:var(--af-font-mono);font-size:11px;">sync delay: ${q.sync_delay_ms > 0 ? '+' : ''}${q.sync_delay_ms}ms · score ${q.sync_score?.toFixed?.(1) || '—'}</div>`;
+    }
+    if (q.last_error) body += `<div style="margin-top:8px;color:var(--af-danger);font-size:11px;">${q.last_error}</div>`;
+    document.getElementById('ep-action').textContent = 'Re-queue';
+    document.getElementById('ep-action').style.display = '';
+  } else {
+    body = `<div style="color:var(--af-text-mute);">Pending dub injection.</div>`;
+    document.getElementById('ep-action').textContent = 'Enqueue now';
+    document.getElementById('ep-action').style.display = '';
+  }
+  document.getElementById('ep-status').innerHTML = body;
+  document.getElementById('ep-action').onclick = () => enqueueEp(season, episode);
+}
+</script>
+{% endblock %}
