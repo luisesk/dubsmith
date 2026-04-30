@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.6] — 2026-04-30
+
+### Fixed
+- **Manual re-mux now works on done/failed jobs**, not only quarantined. UI button shows on all three states. Worker also persists the renamed final path back to \`jobs.target_path\` after success, so retries operate on the file that actually exists post-mux. Use case: a high-confidence sync detection picks the wrong offset (e.g. CR has a recap intro your Bluray doesn't); set a manual delay, re-mux strips the existing dub track and applies the new offset.
+
+[0.10.6]: https://github.com/luisesk/dubsmith/compare/v0.10.5...v0.10.6
+
 ## [0.10.5] — 2026-04-30
 
 ### Performance

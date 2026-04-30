@@ -156,7 +156,7 @@ class Worker:
             # local disk on most setups). Can be overridden via paths.mux_workdir.
             mux_workdir = (cfg.get("paths") or {}).get(
                 "mux_workdir") or str(Path(cfg["paths"]["staging"]).parent / "mux")
-            mux.inject(
+            final_path = mux.inject(
                 job.target_path, str(src_path), result_delay,
                 lang=audio_lang, track_name=audio_label,
                 mux_workdir=mux_workdir,
@@ -166,9 +166,11 @@ class Worker:
             _clean()
             return
 
-        # Success: nuke the per-episode staging dir + prune empty parents
+        # Success: nuke the per-episode staging dir + prune empty parents.
+        # Update target_path to the renamed final file so retries (manual delay,
+        # re-detect) operate on the file that actually exists post-mux.
         _clean()
-        self.queue.set_state(job.id, "done")
+        self.queue.set_state(job.id, "done", target_path=final_path)
         log.info("done: job %d", job.id)
         # trigger Sonarr rescan so DB picks up new filename
         settings_data = self.settings.load() if self.settings else {}
