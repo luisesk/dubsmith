@@ -7,6 +7,7 @@ mapping to mdnx's `--service` flag lives in SERVICE_MAP.
 import logging
 import os
 import re
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -160,12 +161,12 @@ class MdnxDownloader:
             raise ValueError(f"invalid lang code")
         self._ensure_widevine()
         out_dir = self.staging / cr_season_id / f"S{season:02d}" / f"E{ep_number:02d}"
+        # Wipe any leftovers from prior attempts before mdnx writes new temps.
+        # mdnx renames temp-*.m4s -> final.mp4 at the end; if a prior crash left
+        # *.m4s + a partial final, mdnx can ENOENT during rename. Start clean.
+        if out_dir.exists():
+            shutil.rmtree(out_dir, ignore_errors=True)
         out_dir.mkdir(parents=True, exist_ok=True)
-        for stale in out_dir.glob("temp-*.m4s"):
-            try:
-                stale.unlink()
-            except Exception:
-                pass
 
         cmd = [
             "aniDL",

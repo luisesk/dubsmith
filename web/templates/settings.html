@@ -198,19 +198,6 @@
   </div>
 </div>
 
-<div class="card">
-  <div class="card-head"><div class="card-title">Concurrency</div><span class="card-action">applied on container restart</span></div>
-  <div class="card-body">
-    {% for k, label in [('downloads','Downloads'),('muxes','Mux jobs'),('sync','Sync analysis')] %}
-    <div style="display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;padding:10px 0;{% if not loop.first %}border-top:1px solid var(--af-border);{% endif %}">
-      <div style="font-weight:600;">{{ label }}</div>
-      <input type="number" min="1" max="10" value="{{ settings.concurrency[k] }}"
-        onchange="setConcurrency('{{ k }}', parseInt(this.value))"
-        style="width:80px;background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:6px 10px;color:var(--af-text);font-family:var(--af-font-mono);">
-    </div>
-    {% endfor %}
-  </div>
-</div>
 
 <!-- Connect modal -->
 <div id="connect-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center;">

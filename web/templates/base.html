@@ -159,6 +159,24 @@ function toast(msg, kind) {
       </div>
       <div class="topbar-actions">
         <div class="live-pill">CRUNCHYROLL · ONLINE</div>
+        <div class="alert-menu" id="alert-menu">
+          <button class="icon-btn" onclick="toggleAlerts()" title="Alerts" aria-label="Alerts" aria-haspopup="menu" aria-expanded="false" style="position:relative;">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none">
+              <path d="M6 9a6 6 0 0 1 12 0v4l1.5 3h-15L6 13z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+              <path d="M10 19a2 2 0 0 0 4 0" stroke="currentColor" stroke-width="1.6"/>
+            </svg>
+            <span class="alert-badge" id="alert-badge" style="display:none;"></span>
+          </button>
+          <div class="alert-dropdown" role="menu">
+            <div class="alert-dropdown-head">
+              <div style="font-weight:600;font-size:13px;">Alerts</div>
+              <button class="btn sm ghost" onclick="loadAlerts()" title="Refresh">↻</button>
+            </div>
+            <div id="alert-list" style="max-height:340px;overflow:auto;">
+              <div style="padding:14px;color:var(--af-text-mute);font-size:12px;text-align:center;">no alerts</div>
+            </div>
+          </div>
+        </div>
         <button class="icon-btn" onclick="toggleTheme()" title="Toggle theme"><span id="theme-icon"></span></button>
         {% set me = request.session.get("user") if request else None %}
         {% if me %}
@@ -210,6 +228,53 @@ fetch('/api/metrics', {credentials:'same-origin'}).then(r=>r.json()).then(d=>{
   document.getElementById('queue-count').textContent = n;
   document.getElementById('queue-count').classList.toggle('running', n > 0);
 }).catch(()=>{});
+
+// Alerts: bell badge + dropdown
+function toggleAlerts() {
+  const m = document.getElementById('alert-menu');
+  m.classList.toggle('open');
+  const btn = m.querySelector('.icon-btn');
+  btn.setAttribute('aria-expanded', m.classList.contains('open') ? 'true' : 'false');
+  if (m.classList.contains('open')) loadAlerts();
+}
+async function loadAlerts() {
+  try {
+    const r = await fetch('/api/alerts', {credentials:'same-origin'});
+    if (!r.ok) return;
+    const list = await r.json();
+    const badge = document.getElementById('alert-badge');
+    badge.style.display = list.length ? 'block' : 'none';
+    badge.textContent = list.length;
+    const host = document.getElementById('alert-list');
+    if (!list.length) {
+      host.innerHTML = '<div style="padding:14px;color:var(--af-text-mute);font-size:12px;text-align:center;">no alerts</div>';
+      return;
+    }
+    host.innerHTML = list.map(a => {
+      const ts = new Date(a.ts * 1000).toLocaleTimeString();
+      const actions = (a.actions || []).map(x => `<a href="${x.url}" class="btn sm ghost">${x.label}</a>`).join(' ');
+      return `<div class="alert-item alert-${a.severity}">
+        <div class="alert-row"><span class="alert-title">${a.title}</span><span class="alert-time">${ts}</span></div>
+        <div class="alert-msg">${a.message}</div>
+        <div class="alert-actions">${actions}<button class="btn sm ghost" onclick="dismissAlert('${a.key}')">dismiss</button></div>
+      </div>`;
+    }).join('');
+  } catch (e) {}
+}
+async function dismissAlert(key) {
+  await fetch('/api/alerts/' + encodeURIComponent(key), {method:'DELETE', credentials:'same-origin'});
+  loadAlerts();
+}
+document.addEventListener('click', (e) => {
+  const m = document.getElementById('alert-menu');
+  if (!m || !m.classList.contains('open')) return;
+  if (!m.contains(e.target)) {
+    m.classList.remove('open');
+    m.querySelector('.icon-btn').setAttribute('aria-expanded', 'false');
+  }
+});
+loadAlerts();
+setInterval(loadAlerts, 60000);
 </script>
 </body>
 </html>

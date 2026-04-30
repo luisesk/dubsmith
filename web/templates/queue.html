@@ -97,18 +97,6 @@
         loading…
       </pre>
     </div>
-    <div class="card">
-      <div class="card-head"><div class="card-title">Concurrency</div></div>
-      <div class="card-body">
-        {% for k, label in [('downloading','Downloads'),('muxing','Mux jobs'),('syncing','Sync analysis')] %}
-        <div style="display:grid;grid-template-columns:120px 1fr auto;gap:10px;align-items:center;padding:6px 0;">
-          <span style="font-size:12px;">{{ label }}</span>
-          <div class="progress"><div style="width:{{ ((stats[k] or 0) * 25)|int }}%;"></div></div>
-          <span style="font-family:var(--af-font-mono);font-size:11px;color:var(--af-text-mute);">{{ stats[k] or 0 }} / 4</span>
-        </div>
-        {% endfor %}
-      </div>
-    </div>
   </div>
 </div>
 

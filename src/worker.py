@@ -1,7 +1,7 @@
 """Pipeline worker: process one queued job end-to-end."""
 import logging
 
-from . import mux, notify, probe, staging, sync
+from . import health, mux, notify, probe, staging, sync
 from .downloader import MdnxDownloader
 from .queue import Job, Queue
 from .shows import ShowsStore
@@ -72,7 +72,11 @@ class Worker:
         try:
             src_path = self.dl.download_audio(cr_season_id, cr_ep, job.season, on_progress=on_prog)
         except Exception as e:
-            self.queue.set_state(job.id, "failed", last_error=f"download: {e}")
+            err = str(e)
+            self.queue.set_state(job.id, "failed", last_error=f"download: {err}")
+            # Specific error pattern: mdnx couldn't pick the episode — usually stale token
+            if "Episodes not selected" in err or "Anonymous" in err:
+                health.report_episodes_not_selected()
             _clean()
             return
 

@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import __version__, config, downloader, logbuf, probe, scanner, security
+from . import __version__, alerts, config, downloader, health, logbuf, probe, scanner, security
 from .audit import AuditLog
 from .queue import Queue
 from .settings_store import SettingsStore
@@ -1038,6 +1038,35 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
     @app.get("/api/audit", dependencies=[Depends(require_admin)])
     def get_audit(limit: int = 200):
         return audit.tail(n=max(1, min(limit, 2000)))
+
+    # ---------- admin: restart daemon ----------
+    @app.post("/api/restart", dependencies=[Depends(require_admin)])
+    def restart_daemon(request: Request, current: str = Depends(require_auth)):
+        """SIGTERM ourselves; container restart-policy=unless-stopped will respawn.
+        Only honored when run under docker compose with restart policy."""
+        import os as _os
+        import signal as _signal
+        import threading as _threading
+        ip = request.client.host if request and request.client else "?"
+        audit.write(actor=current, ip=ip, action="daemon.restart")
+        # Defer the SIGTERM by 200ms so this response can finish flushing
+        def _kill():
+            import time as _t
+            _t.sleep(0.2)
+            _os.kill(_os.getpid(), _signal.SIGTERM)
+        _threading.Thread(target=_kill, daemon=True).start()
+        return {"ok": True, "message": "restart requested; container should be back in <10s"}
+
+    # ---------- alerts ----------
+    @app.get("/api/alerts", dependencies=[Depends(require_auth)])
+    def get_alerts():
+        from . import alerts as _alerts
+        return _alerts.list_alerts()
+
+    @app.delete("/api/alerts/{key}", dependencies=[Depends(require_operator)])
+    def clear_alert(key: str):
+        from . import alerts as _alerts
+        return {"cleared": _alerts.clear(key)}
 
     # ---------- staging maintenance ----------
     @app.get("/api/staging", dependencies=[Depends(require_auth)])

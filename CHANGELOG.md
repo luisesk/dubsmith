@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] — 2026-04-30
+
+### Removed
+- **Concurrency settings (downloads/muxes/sync)**: only `concurrency.downloads` was ever wired (and even that drove the *whole* pipeline-worker count, not download-phase parallelism). `muxes` and `sync` were UI-only lies. mdnx has known parallelism bugs (config race + ENOENT on temp-file rename), so single-worker is more reliable. The dashboard "X / 4" widget that hardcoded the cap is gone too.
+
+### Fixed
+- **ENOENT race during mdnx finalization**: downloader now `rmtree`-s the per-episode out_dir before each attempt (was only globbing `temp-*.m4s`). Stops mdnx from confusing leftover state with current.
+- Concurrency widget on queue page that hardcoded `/ 4` and was always wrong: removed entirely.
+
+### Added
+- **Alert system**:
+  - `src/alerts.py` in-memory store (key/severity/title/message/actions).
+  - `src/health.py` periodic mdnx whoami probe; raises `source.crunchyroll.auth` alert when CR session expires (parses `USER: Anonymous`). Clears it on recovery. Schedule: every `scheduler.health_interval_minutes` (default 30).
+  - Worker raises `source.crunchyroll.selection` warning when mdnx returns `Episodes not selected!`.
+  - `GET /api/alerts` (auth) lists; `DELETE /api/alerts/{key}` (operator) dismisses.
+  - **Topbar bell icon** with red badge + dropdown listing alerts. Polls every 60s. Reconnect actions link to settings.
+- **`POST /api/restart`** (admin): SIGTERM the daemon; container restart-policy=unless-stopped brings it back. Lets you apply settings changes without shell access.
+
+[0.8.3]: https://github.com/luisesk/dubsmith/compare/v0.8.2...v0.8.3
+
 ## [0.8.2] — 2026-04-30
 
 ### Fixed

@@ -31,11 +31,6 @@ DEFAULTS = {
     "library": {
         "show_posters": True,
     },
-    "concurrency": {
-        "downloads": 2,
-        "muxes": 1,
-        "sync": 2,
-    },
     "ui": {
         "theme": "dark",
         "density": "comfortable",

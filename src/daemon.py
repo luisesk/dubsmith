@@ -6,7 +6,7 @@ import time
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import config, logbuf, scanner, staging
+from . import config, health, logbuf, scanner, staging
 from .api import make_app
 from .queue import Queue
 from .settings_store import SettingsStore
@@ -111,14 +111,15 @@ def run() -> None:
             shows.upsert(int(sid), **sh)
 
     stop = threading.Event()
-    n_workers = max(1, int(settings.load().get("concurrency", {}).get("downloads", 1)))
-    log.info("starting %d worker thread(s)", n_workers)
-    for i in range(n_workers):
-        threading.Thread(
-            target=_worker_loop,
-            args=(f"w{i+1}", cfg, queue, shows, settings, stop),
-            daemon=True, name=f"worker-{i+1}",
-        ).start()
+    # Single sequential worker: mdnx has known parallelism bugs (ENOENT on temp-file
+    # rename, config-race during boot). Sequential keeps things robust; a download +
+    # sync + mux cycle is ~2-3 min anyway.
+    log.info("starting worker thread")
+    threading.Thread(
+        target=_worker_loop,
+        args=("w1", cfg, queue, shows, settings, stop),
+        daemon=True, name="worker-1",
+    ).start()
 
     # Startup janitor: nuke episode dirs older than 7 days (or what config says)
     staging_root = cfg["paths"]["staging"]
@@ -152,7 +153,15 @@ def run() -> None:
         hours=cfg.get("scheduler", {}).get("janitor_interval_hours", 12),
         next_run_time=None,
     )
+    sched.add_job(
+        lambda: health.run_all_checks(sources),
+        "interval",
+        minutes=cfg.get("scheduler", {}).get("health_interval_minutes", 30),
+        next_run_time=None,
+    )
     sched.start()
+    # Initial health probe in background so dashboard reflects state on first load
+    threading.Thread(target=lambda: health.run_all_checks(sources), daemon=True).start()
 
     # initial scan on startup
     threading.Thread(target=lambda: _scan_all(cfg, queue, shows), daemon=True).start()
