@@ -14,9 +14,15 @@ Performance ladder (fastest → slowest):
 3. delay_ms < 0, anything else
      ffmpeg re-encodes to AAC 192k after `atrim`. Slowest path; still
      limited to ~the audio duration on a modern CPU.
+
+Local-disk staging (mux_workdir): when set, mkvmerge writes its output to
+local disk, avoiding NFS small-write latency during the merge. The final
+result is then copied to the target's NFS dir via a tempfile + os.replace
+for atomic swap. Trades local-disk space for mux speed.
 """
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -111,10 +117,24 @@ def _trim_audio(src: str, out: str, delay_ms: int) -> str:
     return f"reencode-aac (src={codec or 'unknown'})"
 
 
+def _stat_same_fs(a: Path, b: Path) -> bool:
+    """True when two paths live on the same device (no cross-FS rename needed)."""
+    try:
+        return a.stat().st_dev == b.stat().st_dev
+    except OSError:
+        return False
+
+
 def inject(target: str, source: str, delay_ms: int,
-           lang: str = "por", track_name: str = "Portuguese Brazil") -> str:
+           lang: str = "por", track_name: str = "Portuguese Brazil",
+           mux_workdir: str | None = None) -> str:
     """Mux source audio into target. Strips any pre-existing track of the same lang
     (resync case). Returns path to final file (may be renamed with a lang suffix).
+
+    mux_workdir: when set, mkvmerge writes its output to that dir (typically local
+    disk), then the result is copied to the target's NFS dir for atomic swap.
+    Avoids NFS small-write latency during the merge. Falls back to target_dir
+    if mux_workdir is unwritable.
     """
     t0 = time.time()
     target_p = Path(target)
@@ -138,7 +158,20 @@ def inject(target: str, source: str, delay_ms: int,
         ]
         log.info("stripping existing %s audio; keeping audio tracks %s", lang, keep_audio_indices)
 
-    with tempfile.TemporaryDirectory(dir=target_dir) as td:
+    # Pick tempdir parent. Prefer mux_workdir (local disk) for speed; fall back
+    # to target_dir if it doesn't exist or isn't writable.
+    work_parent = target_dir
+    work_local = False
+    if mux_workdir:
+        wp = Path(mux_workdir)
+        try:
+            wp.mkdir(parents=True, exist_ok=True)
+            work_parent = wp
+            work_local = not _stat_same_fs(wp, target_dir)
+        except OSError as e:
+            log.warning("mux_workdir %s not usable (%s); falling back to target dir", mux_workdir, e)
+
+    with tempfile.TemporaryDirectory(dir=work_parent, prefix="dubsmith-mux-") as td:
         out_tmp = os.path.join(td, "out.mkv")
         cmd = ["mkvmerge", "-o", out_tmp]
         if keep_audio_indices:
@@ -165,7 +198,7 @@ def inject(target: str, source: str, delay_ms: int,
             "--default-track-flag", "0:0",
             audio_in,
         ]
-        log.info("mkvmerge: %s", " ".join(cmd))
+        log.info("mkvmerge%s: %s", " (local-staged)" if work_local else "", " ".join(cmd))
         t_mux = time.time()
         subprocess.run(cmd, check=True)
         log.info("mkvmerge: %.1fs", time.time() - t_mux)
@@ -175,10 +208,24 @@ def inject(target: str, source: str, delay_ms: int,
         if new_size < orig_size * 0.9:
             raise RuntimeError(f"merged file suspiciously small: {new_size} < 90% of {orig_size}")
 
-        os.replace(out_tmp, final)
+        # Land the file at `final` atomically. If we staged on local disk, copy
+        # to a sibling tempfile on the target FS first so os.replace is atomic.
+        if work_local:
+            t_copy = time.time()
+            nfs_tmp = target_dir / f".dubsmith.{os.getpid()}.{int(t_mux)}.mkv"
+            try:
+                shutil.copyfile(out_tmp, nfs_tmp)
+                os.replace(nfs_tmp, final)
+            except Exception:
+                nfs_tmp.unlink(missing_ok=True)
+                raise
+            log.info("copy-back to target FS: %.1fs", time.time() - t_copy)
+        else:
+            os.replace(out_tmp, final)
 
     if str(final) != str(target_p):
         target_p.unlink(missing_ok=True)
-    log.info("muxed: %s (delay=%dms, mode=%s, total=%.1fs)",
-             final, delay_ms, trim_mode, time.time() - t0)
+    log.info("muxed: %s (delay=%dms, mode=%s, staging=%s, total=%.1fs)",
+             final, delay_ms, trim_mode, "local" if work_local else "target",
+             time.time() - t0)
     return str(final)

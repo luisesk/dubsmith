@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3] — 2026-04-30
+
+### Performance
+- **Local-disk mux staging**: mkvmerge now writes its output to local disk (`/data/mux` by default) instead of the NFS target dir. Avoids NFS small-write latency during the merge — the slowest part of the pipeline for libraries on networked storage. Final result lands at the target via `shutil.copyfile` to a sibling tempfile + atomic `os.replace`. Logged as `staging=local` vs `staging=target`.
+- New mux phase timing: `copy-back to target FS: 4.3s`. So you can see what each step costs.
+- Auto-detects whether the workdir is on the same FS as the target — when it is, skips the copy-back roundtrip and uses the in-place `os.replace` path (same as before).
+
+### Config knob
+- `paths.mux_workdir` (optional): override where mux tempdirs live. Defaults to `<paths.staging>'s parent>/mux` so it sits on the same volume as staging.
+
+### Tests
+- +6 cases (workdir selection, fallback when unwritable, cross-FS copy-back, no leftover tempfiles). 117 total.
+
+[0.10.3]: https://github.com/luisesk/dubsmith/compare/v0.10.2...v0.10.3
+
 ## [0.10.2] — 2026-04-30
 
 ### Performance

@@ -152,9 +152,14 @@ class Worker:
         try:
             audio_lang = show.get("target_audio") or cfg["target_language"]["audio"]
             audio_label = show.get("target_audio_label") or cfg["target_language"]["audio_label"]
+            # Default mux workdir to /data/mux (subdir of staging volume — fast
+            # local disk on most setups). Can be overridden via paths.mux_workdir.
+            mux_workdir = (cfg.get("paths") or {}).get(
+                "mux_workdir") or str(Path(cfg["paths"]["staging"]).parent / "mux")
             mux.inject(
                 job.target_path, str(src_path), result_delay,
                 lang=audio_lang, track_name=audio_label,
+                mux_workdir=mux_workdir,
             )
         except Exception as e:
             self.queue.set_state(job.id, "failed", last_error=f"mux: {e}")
