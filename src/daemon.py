@@ -6,7 +6,7 @@ import time
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import config, health, logbuf, scanner, staging
+from . import config, health, logbuf, reconcile, scanner, staging
 from .api import make_app
 from .queue import Queue
 from .settings_store import SettingsStore
@@ -157,6 +157,20 @@ def run() -> None:
         lambda: health.run_all_checks(sources),
         "interval",
         minutes=cfg.get("scheduler", {}).get("health_interval_minutes", 30),
+        next_run_time=None,
+    )
+
+    def _reconcile():
+        sonarr = Sonarr(cfg["sonarr"]["url"], cfg["sonarr"]["api_key"])
+        try:
+            reconcile.run(sonarr, shows, queue)
+        except Exception as e:
+            log.warning("scheduled reconcile failed: %s", e)
+
+    sched.add_job(
+        _reconcile,
+        "interval",
+        hours=cfg.get("scheduler", {}).get("reconcile_interval_hours", 24),
         next_run_time=None,
     )
     sched.start()

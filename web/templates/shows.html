@@ -10,12 +10,27 @@
     <h1 class="page-title">Shows</h1>
   </div>
   <div class="page-actions">
+    <button class="btn ghost" onclick="reconcileNow()" title="drop tracked shows whose Sonarr id no longer exists">Reconcile</button>
     <div class="chip-row">
       <button class="chip" id="view-table" onclick="setView('table')">Table</button>
       <button class="chip active" id="view-grid" onclick="setView('grid')">Posters</button>
     </div>
   </div>
 </div>
+
+<script>
+async function reconcileNow() {
+  if (!confirm('Reconcile with Sonarr — will remove tracked shows whose series id no longer exists in Sonarr and cancel their pending queue jobs.')) return;
+  const r = await fetch('/api/shows/reconcile', {method:'POST', credentials:'same-origin'});
+  if (!r.ok) { toast('reconcile failed: ' + await r.text(), 'err'); return; }
+  const d = await r.json();
+  if (d.error) { toast('error: ' + d.error, 'err'); return; }
+  const removed = d.removed || [];
+  if (!removed.length) { toast('nothing to clean — all tracked shows still exist in Sonarr'); return; }
+  toast(`removed ${removed.length} stale show(s) · cleared ${d.queue_cleared} job(s)`);
+  setTimeout(() => softReload(), 800);
+}
+</script>
 
 <div id="tracked-section">
   <h2 style="font-size:14px;color:var(--af-text-mute);margin:0 0 8px;">Tracked</h2>

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.7] — 2026-04-30
+
+### Added
+- **Auto-reconcile with Sonarr.** When a series gets deleted in Sonarr, the corresponding show entry in Dubsmith and any pending queue jobs for it are now removed automatically. Three trigger paths:
+  - Daily scheduled job (\`scheduler.reconcile_interval_hours\`, default 24).
+  - **Sonarr webhook** with \`eventType=SeriesDelete\` — instant cleanup. Configure your Sonarr webhook to also fire on \"On Series Delete\".
+  - **Manual button** on \`/shows\` (top-right): \"Reconcile\". Confirms before acting.
+- \`POST /api/shows/reconcile\` (operator) — returns \`{checked, removed: [{series_id, name, queue_cleared}], queue_cleared}\`. Audited.
+- Done/quarantined jobs are kept for history; only pending/in-flight/failed jobs are cleared on series removal.
+
+### Tests
+- +4 cases (zombie removal, done preservation, sonarr-unreachable safety, no-op). 126 total.
+
+[0.10.7]: https://github.com/luisesk/dubsmith/compare/v0.10.6...v0.10.7
+
 ## [0.10.6] — 2026-04-30
 
 ### Fixed

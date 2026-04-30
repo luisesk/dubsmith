@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import __version__, alerts, config, downloader, health, logbuf, probe, scanner, security
+from . import __version__, alerts, config, downloader, health, logbuf, probe, reconcile, scanner, security
 from .audit import AuditLog
 from .queue import Queue
 from .settings_store import SettingsStore
@@ -272,7 +272,6 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
             sent = req.headers.get("x-webhook-secret") or req.query_params.get("secret") or ""
             if not secrets.compare_digest(sent, wh_secret):
                 raise HTTPException(401, "invalid webhook secret")
-        # bound payload size before parsing
         body = await req.body()
         if len(body) > WEBHOOK_MAX_BYTES:
             raise HTTPException(413, f"payload too large (>{WEBHOOK_MAX_BYTES} bytes)")
@@ -281,10 +280,19 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
         except json.JSONDecodeError:
             raise HTTPException(400, "invalid JSON")
         event = payload.get("eventType")
-        if event not in ("Download", "Import"):
-            return {"skipped": event}
         series = payload.get("series") or {}
         sid = series.get("id")
+        # Series-delete: drop from shows + clear pending queue.
+        if event == "SeriesDelete":
+            if not sid:
+                return {"error": "no series.id"}
+            removed = shows.delete(int(sid))
+            n = reconcile._delete_series_pending(queue, int(sid))
+            log.info("webhook SeriesDelete: sid=%d removed=%s cleared=%d", sid, removed, n)
+            return {"event": "SeriesDelete", "series_id": sid,
+                    "removed_show": removed, "cleared_jobs": n}
+        if event not in ("Download", "Import"):
+            return {"skipped": event}
         if not sid:
             return {"error": "no series.id"}
         show = shows.get(sid)
@@ -921,6 +929,16 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
         if not ring:
             return "(log buffer not initialized)"
         return "\n".join(ring.tail(n=lines, level=level)) or "(no entries)"
+
+    # ---------- reconcile (Sonarr ↔ Dubsmith state sync) ----------
+    @app.post("/api/shows/reconcile", dependencies=[Depends(require_operator)])
+    def reconcile_shows(request: Request, current: str = Depends(require_auth)):
+        result = reconcile.run(_sonarr(), shows, queue)
+        ip = request.client.host if request and request.client else "?"
+        audit.write(actor=current, ip=ip, action="shows.reconcile",
+                    removed=len(result.get("removed") or []),
+                    cleared=result.get("queue_cleared", 0))
+        return result
 
     # ---------- discover (library-wide audio coverage scanner) ----------
     @app.get("/api/discover", dependencies=[Depends(require_auth)])
