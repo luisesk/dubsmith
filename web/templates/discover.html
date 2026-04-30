@@ -14,8 +14,13 @@
     </div>
   </div>
   <div class="page-actions">
-    <span id="scan-status" style="font-size:11px;color:var(--af-text-mute);font-family:var(--af-font-mono);"></span>
-    <button class="btn primary" onclick="triggerScan()" id="scan-btn">Scan now</button>
+    <span id="scan-status" style="font-size:11px;color:var(--af-text-mute);font-family:var(--af-font-mono);">
+      {% if data.running %}scanning library…{% endif %}
+    </span>
+    <button class="btn primary" onclick="triggerScan()" id="scan-btn"
+      {% if data.running %}disabled{% endif %}>
+      {% if data.running %}Scanning…{% else %}Scan now{% endif %}
+    </button>
   </div>
 </div>
 
@@ -198,12 +203,26 @@ function toggleAll(master) {
   updateSel();
 }
 
-async function triggerScan() {
+function setScanning(on) {
   const btn = document.getElementById('scan-btn');
-  btn.disabled = true; btn.textContent = 'Scanning…';
-  document.getElementById('scan-status').textContent = 'kicking off scan…';
+  btn.disabled = on;
+  btn.textContent = on ? 'Scanning…' : 'Scan now';
+  document.getElementById('scan-status').textContent = on ? 'scanning library…' : '';
+}
+
+async function triggerScan() {
+  setScanning(true);
+  window.__scanWasRunning = true;
   const r = await fetch('/api/discover/scan', {method:'POST', credentials:'same-origin'});
-  if (!r.ok) { toast('scan failed: ' + await r.text(), 'err'); btn.disabled = false; btn.textContent = 'Scan now'; return; }
+  if (!r.ok) {
+    toast('scan failed: ' + await r.text(), 'err');
+    setScanning(false);
+    return;
+  }
+  const j = await r.json();
+  if (j.already_running) {
+    toast('scan already in progress — attaching');
+  }
   pollScan();
 }
 
@@ -211,11 +230,21 @@ async function pollScan() {
   const r = await fetch('/api/discover', {credentials:'same-origin'});
   if (!r.ok) return;
   const d = await r.json();
-  document.getElementById('scan-status').textContent = d.running ? 'scanning library…' : 'done';
-  if (d.running) { setTimeout(pollScan, 2000); return; }
-  // reload page to render new rows
-  softReload();
+  if (d.running) {
+    setScanning(true);
+    setTimeout(pollScan, 2000);
+    return;
+  }
+  setScanning(false);
+  // First completion after we entered scanning mode → reload to show fresh rows.
+  if (window.__scanWasRunning) softReload();
 }
+
+// On page load: if server reports a scan in progress, attach to it.
+{% if data.running %}
+window.__scanWasRunning = true;
+setTimeout(pollScan, 1500);
+{% endif %}
 
 async function scanOne(sid) {
   const r = await fetch('/scan/' + sid, {method:'POST', credentials:'same-origin'});

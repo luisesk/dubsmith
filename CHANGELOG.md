@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-04-30
+
+### Fixed
+- **Discover scan state survives page reload.** Button reflects actual server state via `/api/discover.running`. If you reload mid-scan the button stays `Scanning…` and disabled, and JS auto-attaches to the in-flight scan via the existing 2s poll. New scans rejected (with toast) while one is running — no double-trigger.
+
+[0.9.1]: https://github.com/luisesk/dubsmith/compare/v0.9.0...v0.9.1
+
 ## [0.9.0] — 2026-04-30
 
 ### Added
