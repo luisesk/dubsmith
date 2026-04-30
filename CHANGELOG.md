@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2] — 2026-04-30
+
+### Performance
+- **Negative-delay mux is now lossless + fast for AAC/AC3/EAC3/Opus/Vorbis/FLAC/MP3 sources**: ffmpeg `-c:a copy` with frame-aligned `-ss` trim instead of re-encoding to AAC 192k. Cuts 30-60s off mux time for the typical Crunchyroll AAC source. Falls back to AAC re-encode if copy fails or codec isn't on the safe list.
+- Mux phases now log timings: \`trim: copy(aac) in 1.2s\` / \`mkvmerge: 14.8s\` / \`muxed: ... total=16.1s\`. Surfaces what's actually slow if a job feels off.
+
+### Performance ladder (recap)
+1. \`delay_ms >= 0\` — \`mkvmerge --sync 0:N\` metadata only. No audio rewrite.
+2. \`delay_ms < 0\`, copyable codec — \`-c:a copy\` lossless trim.
+3. \`delay_ms < 0\`, exotic codec — AAC re-encode fallback.
+
+### Tests
+- +10 cases (codec detection, copy/reencode branch, fallback). 111 total.
+
+[0.10.2]: https://github.com/luisesk/dubsmith/compare/v0.10.1...v0.10.2
+
 ## [0.10.1] — 2026-04-30
 
 ### Added
