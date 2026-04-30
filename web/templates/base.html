@@ -34,6 +34,21 @@ function toggleDensity() {
 function toggleSidebar() {
   document.body.classList.toggle('sb-open');
 }
+function toggleUserMenu() {
+  const m = document.getElementById('user-menu');
+  if (!m) return;
+  m.classList.toggle('open');
+  const btn = m.querySelector('.user-btn');
+  if (btn) btn.setAttribute('aria-expanded', m.classList.contains('open') ? 'true' : 'false');
+}
+document.addEventListener('click', (e) => {
+  const m = document.getElementById('user-menu');
+  if (!m || !m.classList.contains('open')) return;
+  if (!m.contains(e.target)) {
+    m.classList.remove('open');
+    m.querySelector('.user-btn').setAttribute('aria-expanded', 'false');
+  }
+});
 // close sidebar after nav click on mobile
 document.addEventListener('click', (e) => {
   if (window.innerWidth >= 769) return;
@@ -123,12 +138,6 @@ function toast(msg, kind) {
       </a>
     </nav>
     <div class="sidebar-footer">
-      <a href="/profile" style="padding:8px 10px;color:var(--af-text-mute);text-decoration:none;font-size:12px;border-radius:6px;display:flex;align-items:center;gap:8px;" onmouseover="this.style.background='var(--af-bg-hover)';" onmouseout="this.style.background='';">
-        ◌ My profile
-      </a>
-      <a href="/logout" style="padding:8px 10px;color:var(--af-text-mute);text-decoration:none;font-size:12px;border-radius:6px;display:flex;align-items:center;gap:8px;" onmouseover="this.style.background='var(--af-bg-hover)';" onmouseout="this.style.background='';">
-        ↩ Sign out
-      </a>
       <div class="lib-card">
         <div style="display:flex;align-items:center;gap:6px;font-size:10px;color:var(--af-text-dim);text-transform:uppercase;letter-spacing:.1em;font-family:var(--af-font-mono);">
           <span id="i-libpath"></span> Library path
@@ -151,6 +160,30 @@ function toast(msg, kind) {
       <div class="topbar-actions">
         <div class="live-pill">CRUNCHYROLL · ONLINE</div>
         <button class="icon-btn" onclick="toggleTheme()" title="Toggle theme"><span id="theme-icon"></span></button>
+        {% set me = request.session.get("user") if request else None %}
+        {% if me %}
+        <div class="user-menu" id="user-menu">
+          <button class="user-btn" onclick="toggleUserMenu()" title="{{ me }}" aria-haspopup="menu" aria-expanded="false">
+            <img class="user-avatar" src="/api/users/{{ me }}/avatar"
+                 alt="{{ me }}" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+            <span class="user-initial" style="display:none;">{{ me[0]|upper }}</span>
+          </button>
+          <div class="user-dropdown" role="menu">
+            <div class="user-dropdown-head">
+              <div style="font-weight:600;font-size:13px;">{{ me }}</div>
+              <div style="font-size:11px;color:var(--af-text-mute);">signed in</div>
+            </div>
+            <a href="/profile" class="user-dropdown-item" role="menuitem">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.6"/><path d="M4 21a8 8 0 0 1 16 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+              <span>My profile</span>
+            </a>
+            <a href="/logout" class="user-dropdown-item" role="menuitem">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l-5-5 5-5M5 12h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span>Sign out</span>
+            </a>
+          </div>
+        </div>
+        {% endif %}
       </div>
     </div>
     <main class="page">

@@ -933,6 +933,11 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
         )
 
     # ---------- self-service profile ----------
+    AVATAR_DIR = config.data_dir() / "avatars"
+    AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+    AVATAR_MAX_BYTES = 2 * 1024 * 1024  # 2 MB
+    AVATAR_ALLOWED = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+
     @app.get("/profile", response_class=HTMLResponse)
     def profile_page(request: Request, current: str = Depends(require_auth)):
         u = (users.get(current) if users else None) or {}
@@ -940,6 +945,69 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
             request=request, name="profile.html",
             context={"current_user": current, "role": u.get("role", "viewer")},
         )
+
+    @app.get("/api/users/{username}/avatar")
+    def get_avatar(username: str):
+        # Sanitize: only allow valid usernames
+        if not security.valid_username(username):
+            raise HTTPException(404)
+        for ext in (".png", ".jpg", ".webp", ".gif"):
+            p = AVATAR_DIR / f"{username}{ext}"
+            if p.exists():
+                from fastapi.responses import FileResponse
+                return FileResponse(p, headers={"Cache-Control": "private, max-age=300"})
+        raise HTTPException(404)
+
+    @app.post("/api/users/me/avatar")
+    async def upload_avatar(request: Request, current: str = Depends(require_auth)):
+        ctype = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if ctype not in AVATAR_ALLOWED:
+            # Allow multipart upload too
+            if not ctype.startswith("multipart/"):
+                raise HTTPException(415, f"unsupported media type {ctype!r}")
+        # Read body, bounded
+        body = await request.body()
+        if len(body) > AVATAR_MAX_BYTES:
+            raise HTTPException(413, f"avatar too large (>{AVATAR_MAX_BYTES} bytes)")
+        # Multipart parsing
+        if ctype.startswith("multipart/"):
+            from starlette.datastructures import UploadFile
+            form = await request.form()
+            f = form.get("file") or form.get("avatar")
+            if not isinstance(f, UploadFile):
+                raise HTTPException(400, "field 'file' required")
+            ctype = (f.content_type or "").lower()
+            if ctype not in AVATAR_ALLOWED:
+                raise HTTPException(415, f"unsupported media type {ctype!r}")
+            data = await f.read()
+            if len(data) > AVATAR_MAX_BYTES:
+                raise HTTPException(413, "avatar too large")
+        else:
+            data = body
+        ext = {"image/png": ".png", "image/jpeg": ".jpg",
+               "image/webp": ".webp", "image/gif": ".gif"}[ctype]
+        # Remove any other-extension files for this user
+        for old in AVATAR_DIR.glob(f"{current}.*"):
+            try: old.unlink()
+            except OSError: pass
+        path = AVATAR_DIR / f"{current}{ext}"
+        path.write_bytes(data)
+        ip = request.client.host if request.client else "?"
+        audit.write(actor=current, ip=ip, action="user.avatar_upload",
+                    target=current, bytes=len(data))
+        return {"ok": True, "size": len(data), "type": ctype}
+
+    @app.delete("/api/users/me/avatar")
+    def delete_avatar(request: Request, current: str = Depends(require_auth)):
+        n = 0
+        for old in AVATAR_DIR.glob(f"{current}.*"):
+            try:
+                old.unlink(); n += 1
+            except OSError:
+                pass
+        ip = request.client.host if request.client else "?"
+        audit.write(actor=current, ip=ip, action="user.avatar_delete", target=current)
+        return {"ok": True, "removed": n}
 
     @app.post("/api/users/me/password")
     def change_my_password(payload: dict, request: Request,

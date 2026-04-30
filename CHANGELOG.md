@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-04-30
+
+### Changed
+- **Topbar user menu** replaces the bottom-of-sidebar Profile/Logout text links. Avatar button (top-right) opens a dropdown with Profile + Sign out, properly iconified.
+
+### Added
+- **Avatar upload** at `/profile`: PNG/JPEG/WebP/GIF up to 2 MB. Stored at `/data/avatars/{username}.{ext}`. Cleared via Remove button or `DELETE /api/users/me/avatar`. Audited.
+- `GET /api/users/{username}/avatar` serves the file (cache 5 min); falls back to initial-letter circle on 404.
+
+[0.8.1]: https://github.com/luisesk/dubsmith/compare/v0.8.0...v0.8.1
+
 ## [0.8.0] — 2026-04-30
 
 ### Fixed
