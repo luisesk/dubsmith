@@ -83,7 +83,7 @@ def test_trim_falls_back_to_reencode_on_copy_failure(monkeypatch, tmp_path):
 
     def fake_copy(src, out, delay_ms):
         called.append("copy")
-        raise subprocess.CalledProcessError(1, "ffmpeg")
+        raise RuntimeError("ffmpeg trim copy exit 1: bad codec")
 
     def fake_reencode(src, out, delay_ms):
         called.append("reencode")
@@ -95,6 +95,22 @@ def test_trim_falls_back_to_reencode_on_copy_failure(monkeypatch, tmp_path):
     mode = mux._trim_audio("/in", str(tmp_path / "o.mkv"), -100)
     assert called == ["copy", "reencode"]
     assert "reencode" in mode
+
+
+def test_run_or_raise_passes_through_success():
+    """Wrapper returns cleanly when subprocess exits 0."""
+    r = mux._run_or_raise(["true"], label="test")
+    assert r.returncode == 0
+
+
+def test_run_or_raise_surfaces_stderr():
+    """Wrapper raises with the actual stderr message."""
+    import pytest
+    with pytest.raises(RuntimeError) as ei:
+        mux._run_or_raise(["sh", "-c", "echo BAD_REASON >&2; exit 7"], label="test")
+    msg = str(ei.value)
+    assert "exit 7" in msg
+    assert "BAD_REASON" in msg
 
 
 def test_trim_audio_rejects_positive_delay():

@@ -29,7 +29,7 @@ def test_inject_uses_target_dir_when_workdir_none(tmp_path, monkeypatch):
     src = tmp_path / "audio.mkv"; _make_video(src)
 
     captured = {}
-    def fake_run(cmd, check=False):
+    def fake_run(cmd, **kwargs):
         # Find the -o path; mkvmerge tempdir lives next to target
         for i, a in enumerate(cmd):
             if a == "-o":
@@ -37,7 +37,10 @@ def test_inject_uses_target_dir_when_workdir_none(tmp_path, monkeypatch):
                 captured["out_dir"] = out.parent.parent  # tempdir lives in target's dir
                 # Write a "merged" file > 90% of target
                 out.write_bytes(b"\x00" * 1024)
-        class R: returncode = 0
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
         return R()
 
     monkeypatch.setattr(mux.probe, "streams", lambda p: [])
@@ -57,14 +60,17 @@ def test_inject_uses_mux_workdir_when_set(tmp_path, monkeypatch):
     src = tmp_path / "a.mkv"; _make_video(src)
 
     captured = {}
-    def fake_run(cmd, check=False):
+    def fake_run(cmd, **kwargs):
         for i, a in enumerate(cmd):
             if a == "-o":
                 out = Path(cmd[i + 1])
                 captured["out_parent"] = out.parent
                 captured["tempdir_parent"] = out.parent.parent
                 out.write_bytes(b"\x00" * 1024)
-        class R: returncode = 0
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
         return R()
 
     monkeypatch.setattr(mux.probe, "streams", lambda p: [])
@@ -81,12 +87,15 @@ def test_inject_falls_back_when_workdir_unwritable(tmp_path, monkeypatch):
     src = tmp_path / "a.mkv"; _make_video(src)
 
     captured = {}
-    def fake_run(cmd, check=False):
+    def fake_run(cmd, **kwargs):
         for i, a in enumerate(cmd):
             if a == "-o":
                 Path(cmd[i + 1]).write_bytes(b"\x00" * 1024)
                 captured["tempdir_parent"] = Path(cmd[i + 1]).parent.parent
-        class R: returncode = 0
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
         return R()
 
     # Force mkdir to fail
@@ -118,11 +127,14 @@ def test_inject_atomic_copyback_when_cross_fs(tmp_path, monkeypatch):
     monkeypatch.setattr(mux, "_stat_same_fs", lambda a, b: False)
     monkeypatch.setattr(mux.probe, "streams", lambda p: [])
 
-    def fake_run(cmd, check=False):
+    def fake_run(cmd, **kwargs):
         for i, a in enumerate(cmd):
             if a == "-o":
                 Path(cmd[i + 1]).write_bytes(b"\x00" * 1024)
-        class R: returncode = 0
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
         return R()
 
     monkeypatch.setattr(mux.subprocess, "run", fake_run)

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.4] — 2026-04-30
+
+### Fixed
+- **mkvmerge / ffmpeg failures showed only "non-zero exit status N"** with no clue why. Same opacity bug previously fixed for ffprobe in v0.8.5; now also applied to mkvmerge and both ffmpeg trim helpers. Failures now read e.g. \`mkvmerge exit 1: <last stderr line>\` so the actual reason hits the queue's \`last_error\` column.
+
+### Tests
+- +2 cases (subprocess wrapper success + stderr surfacing). 119 total.
+
+[0.10.4]: https://github.com/luisesk/dubsmith/compare/v0.10.3...v0.10.4
+
 ## [0.10.3] — 2026-04-30
 
 ### Performance

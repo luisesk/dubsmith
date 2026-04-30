@@ -53,6 +53,19 @@ def _filename_suffix(lang: str) -> str:
     return _LANG_SUFFIX.get(lang, f"Dub-{lang}")
 
 
+def _run_or_raise(cmd: list[str], label: str) -> subprocess.CompletedProcess:
+    """Run a subprocess, capture stderr, and raise RuntimeError with the actual
+    error message instead of the generic CalledProcessError 'non-zero exit status N'."""
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        err_text = (r.stderr or r.stdout or "").strip()
+        # Last meaningful line (skip blanks); cap to 320 chars to keep db rows sane
+        last = next((ln for ln in reversed(err_text.splitlines()) if ln.strip()),
+                    "(no output)")
+        raise RuntimeError(f"{label} exit {r.returncode}: {last[:320]}")
+    return r
+
+
 def _audio_codec(path: str) -> str:
     """Return codec_name of the first audio stream (lower-case), or '' on failure."""
     try:
@@ -67,7 +80,7 @@ def _audio_codec(path: str) -> str:
 def _trim_audio_copy(src: str, out: str, delay_ms: int) -> None:
     """Lossless frame-aligned trim via `-c:a copy`. Fast (seconds)."""
     trim_s = abs(delay_ms) / 1000
-    subprocess.run(
+    _run_or_raise(
         [
             "ffmpeg", "-y", "-loglevel", "error",
             "-ss", f"{trim_s:.3f}",
@@ -77,7 +90,7 @@ def _trim_audio_copy(src: str, out: str, delay_ms: int) -> None:
             "-c:a", "copy",
             out,
         ],
-        check=True,
+        label="ffmpeg trim copy",
     )
 
 
@@ -85,7 +98,7 @@ def _trim_audio_reencode(src: str, out: str, delay_ms: int) -> None:
     """Fallback for codecs we can't safely copy. Re-encodes to AAC 192k."""
     trim_s = abs(delay_ms) / 1000
     af = f"atrim=start={trim_s:.3f},asetpts=PTS-STARTPTS"
-    subprocess.run(
+    _run_or_raise(
         [
             "ffmpeg", "-y", "-loglevel", "error",
             "-i", src,
@@ -94,7 +107,7 @@ def _trim_audio_reencode(src: str, out: str, delay_ms: int) -> None:
             "-c:a", "aac", "-b:a", "192k",
             out,
         ],
-        check=True,
+        label="ffmpeg trim reencode",
     )
 
 
@@ -107,7 +120,7 @@ def _trim_audio(src: str, out: str, delay_ms: int) -> str:
         try:
             _trim_audio_copy(src, out, delay_ms)
             return f"copy({codec})"
-        except subprocess.CalledProcessError as e:
+        except RuntimeError as e:
             log.warning("codec-copy trim failed (%s); falling back to AAC re-encode", e)
             try:
                 Path(out).unlink(missing_ok=True)
@@ -200,7 +213,7 @@ def inject(target: str, source: str, delay_ms: int,
         ]
         log.info("mkvmerge%s: %s", " (local-staged)" if work_local else "", " ".join(cmd))
         t_mux = time.time()
-        subprocess.run(cmd, check=True)
+        _run_or_raise(cmd, label="mkvmerge")
         log.info("mkvmerge: %.1fs", time.time() - t_mux)
 
         orig_size = target_p.stat().st_size
