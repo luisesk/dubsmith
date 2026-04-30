@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-04-30
+
+### Changed
+- **Discover page now answers the right question**: \"Which library shows are missing the dub AND have it available on the connected source?\" Previous version only probed local files. Now, for tracked shows missing the dub locally, we additionally call mdnx (`aniDL --service <kind> -s <cr_season_id>`) per mapped season to read the **available dub languages** on the source. Cross-form lang match (`pt`/`por`/`pt-BR`) decides if the target is reachable.
+- New default filter chip: **Actionable** (missing locally + source has dub). The dataset that's actually worth bulk-enqueuing.
+- Stats card "Actionable" replaces "Series in Sonarr" as the headline metric.
+- Per-row checkbox auto-disables on non-actionable rows so bulk-scan only acts on the relevant set.
+- Source column shows source kind + which seasons have the dub. \"no dub\" / \"untracked\" / \"probe err\" states distinguished from each other.
+- Added filter chips: \"Missing — source lacks dub\", \"Missing — needs setup\".
+
+### Notes
+- Untracked shows skip the source probe (would need a full `--search` per show, which is too slow for v1). Their bucket is \"needs setup\" — wire CR mapping via the existing wizard, then re-scan.
+- Source probe is the slow part: ~3s per mapped CR season. With 4 tracked shows × 1-2 seasons each it's ~15s. Cached for the next page load.
+
+[0.10.0]: https://github.com/luisesk/dubsmith/compare/v0.9.1...v0.10.0
+
 ## [0.9.1] — 2026-04-30
 
 ### Fixed

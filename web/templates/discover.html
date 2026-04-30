@@ -9,8 +9,10 @@
     <div class="page-eyebrow">library audit</div>
     <h1 class="page-title">Discover</h1>
     <div style="color:var(--af-text-mute);margin-top:4px;font-size:13px;">
-      Scans every Sonarr series, ffprobes one episode per show, and flags shows missing
-      <code>{{ target_lang }}</code> audio. Pick the ones you want and bulk-enqueue.
+      Scans every Sonarr series, ffprobes one episode per show, and — for tracked shows —
+      probes the connected source (Crunchyroll / Hidive / ADN) to see if the
+      <code>{{ target_lang }}</code> dub is fetchable. <b>Actionable</b> = missing in
+      library AND source has it.
     </div>
   </div>
   <div class="page-actions">
@@ -25,25 +27,25 @@
 </div>
 
 <div class="stats-grid">
-  <div class="stat-card info">
-    <div class="stat-label">Series in Sonarr</div>
-    <div class="stat-value" id="cnt-total">{{ summary.total }}</div>
-    <div class="stat-sub">scanned {{ data.duration_s or 0 }}s</div>
+  <div class="stat-card success">
+    <div class="stat-label">Actionable</div>
+    <div class="stat-value">{{ summary.actionable }}</div>
+    <div class="stat-sub">missing locally + source has dub</div>
   </div>
   <div class="stat-card warn">
     <div class="stat-label">Missing dub</div>
-    <div class="stat-value" id="cnt-missing">{{ summary.missing }}</div>
-    <div class="stat-sub">eligible for setup or scan</div>
+    <div class="stat-value">{{ summary.missing }}</div>
+    <div class="stat-sub">across {{ summary.total }} series · {{ data.duration_s or 0 }}s scan</div>
   </div>
-  <div class="stat-card success">
+  <div class="stat-card info">
     <div class="stat-label">Already have dub</div>
-    <div class="stat-value" id="cnt-complete">{{ summary.complete }}</div>
+    <div class="stat-value">{{ summary.complete }}</div>
     <div class="stat-sub">first ep contains {{ target_lang }}</div>
   </div>
   <div class="stat-card">
     <div class="stat-label">Tracked / untracked</div>
     <div class="stat-value">{{ summary.tracked }} / {{ summary.untracked }}</div>
-    <div class="stat-sub">{{ summary.errors }} probe error{{ 's' if summary.errors != 1 else '' }}</div>
+    <div class="stat-sub">{{ summary.missing_unknown }} need setup to probe source</div>
   </div>
 </div>
 
@@ -56,11 +58,12 @@
   </div>
   <div class="card-body">
     <div class="chip-row">
-      <button class="chip active" data-f="missing" onclick="filterRows(this)">Missing dub</button>
-      <button class="chip" data-f="all" onclick="filterRows(this)">All</button>
+      <button class="chip active" data-f="actionable" onclick="filterRows(this)">Actionable</button>
+      <button class="chip" data-f="missing" onclick="filterRows(this)">All missing</button>
+      <button class="chip" data-f="missing_no_source" onclick="filterRows(this)">Missing — source lacks dub</button>
+      <button class="chip" data-f="missing_unknown" onclick="filterRows(this)">Missing — needs setup</button>
       <button class="chip" data-f="complete" onclick="filterRows(this)">Has dub</button>
-      <button class="chip" data-f="tracked" onclick="filterRows(this)">Tracked only</button>
-      <button class="chip" data-f="untracked" onclick="filterRows(this)">Untracked only</button>
+      <button class="chip" data-f="all" onclick="filterRows(this)">All</button>
       <button class="chip" data-f="errors" onclick="filterRows(this)">Probe errors</button>
     </div>
     <div style="margin-top:10px;">
@@ -88,20 +91,29 @@
         <tr>
           <th style="width:36px;"><input type="checkbox" onchange="toggleAll(this)"></th>
           <th>Title</th>
-          <th>Eps</th>
-          <th>First ep langs</th>
-          <th>Status</th>
+          <th>Library</th>
+          <th>Source ({{ target_lang }})</th>
           <th></th>
         </tr>
       </thead>
       <tbody id="rows">
       {% for r in data.rows %}
+      {% set src_state = 'unknown' %}
+      {% if r.source_available is true %}{% set src_state = 'available' %}
+      {% elif r.source_available is false %}
+        {% if r.source_probe_errors %}{% set src_state = 'src_error' %}
+        {% else %}{% set src_state = 'unavailable' %}
+        {% endif %}
+      {% endif %}
+      {% set bucket = 'complete' if r.has_target_in_first_ep else ('error' if r.probe_error else (
+            'actionable' if src_state == 'available' else (
+            'missing_no_source' if src_state == 'unavailable' else 'missing_unknown'))) %}
       <tr data-sid="{{ r.series_id }}"
           data-tracked="{{ '1' if r.tracked else '0' }}"
-          data-has="{{ '1' if r.has_target_in_first_ep else '0' }}"
-          data-error="{{ '1' if r.probe_error else '0' }}"
+          data-bucket="{{ bucket }}"
           data-title="{{ r.title|lower }}">
-        <td><input type="checkbox" class="row-cb" onchange="updateSel()"></td>
+        <td><input type="checkbox" class="row-cb" onchange="updateSel()"
+          {% if not (r.tracked and src_state == 'available') %}disabled title="not actionable — needs setup or source missing dub"{% endif %}></td>
         <td>
           <div style="display:flex;align-items:center;gap:10px;">
             <img src="/api/poster/{{ r.series_id }}.jpg" loading="lazy" alt=""
@@ -109,21 +121,34 @@
               onerror="this.style.visibility='hidden';">
             <div>
               <div style="font-weight:600;font-size:13px;">{{ r.title }}{% if r.year %} <span style="color:var(--af-text-mute);font-weight:400;">({{ r.year }})</span>{% endif %}</div>
-              <div style="font-size:11px;color:var(--af-text-mute);font-family:var(--af-font-mono);">id {{ r.series_id }}{% if r.tracked %} · tracked{% endif %}{% if r.monitored %}{% else %} · unmonitored{% endif %}</div>
+              <div style="font-size:11px;color:var(--af-text-mute);font-family:var(--af-font-mono);">
+                id {{ r.series_id }} · {{ r.total_eps }} eps{% if r.tracked %} · tracked{% endif %}
+                {% if r.first_ep_langs %} · langs: {{ r.first_ep_langs|join(',') }}{% endif %}
+              </div>
             </div>
           </div>
-        </td>
-        <td>{{ r.total_eps }}</td>
-        <td style="font-family:var(--af-font-mono);font-size:11px;">
-          {% if r.first_ep_langs %}{{ r.first_ep_langs|join(', ') }}{% else %}—{% endif %}
         </td>
         <td>
           {% if r.probe_error %}
             <span class="state-pill state-failed" title="{{ r.probe_error }}">error</span>
           {% elif r.has_target_in_first_ep %}
-            <span class="state-pill state-done">{{ target_lang }}</span>
+            <span class="state-pill state-done">has {{ target_lang }}</span>
           {% else %}
             <span class="state-pill state-quarantined">missing</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if not r.tracked %}
+            <span class="state-pill" style="background:var(--af-bg-input);color:var(--af-text-mute);">untracked</span>
+          {% elif src_state == 'available' %}
+            <span class="state-pill state-done">on {{ r.source_kind }}</span>
+            {% if r.source_seasons_with_lang %}<span style="font-family:var(--af-font-mono);font-size:10px;color:var(--af-text-mute);">S{{ r.source_seasons_with_lang|join(',S') }}</span>{% endif %}
+          {% elif src_state == 'unavailable' %}
+            <span class="state-pill state-quarantined" title="source has the show but no {{ target_lang }} dub">no dub</span>
+          {% elif src_state == 'src_error' %}
+            <span class="state-pill state-failed" title="{{ r.source_probe_errors }}">probe err</span>
+          {% else %}
+            <span class="state-pill" style="background:var(--af-bg-input);color:var(--af-text-mute);">—</span>
           {% endif %}
         </td>
         <td style="white-space:nowrap;">
@@ -148,8 +173,8 @@
 <script>
 const TARGET_LANG = {{ target_lang|tojson }};
 
-// Default filter: missing
-let activeFilter = 'missing';
+// Default filter: actionable (missing in lib + source has dub)
+let activeFilter = 'actionable';
 filterRows(document.querySelector('.chip.active'));
 
 function filterRows(btn) {
@@ -159,20 +184,17 @@ function filterRows(btn) {
     btn.classList.add('active');
   }
   const q = (document.getElementById('search').value || '').toLowerCase().trim();
-  let shown = 0;
   document.querySelectorAll('#rows tr').forEach(tr => {
-    const tracked = tr.dataset.tracked === '1';
-    const has = tr.dataset.has === '1';
-    const err = tr.dataset.error === '1';
+    const bucket = tr.dataset.bucket;  // actionable | missing_no_source | missing_unknown | complete | error
     let show = true;
-    if (activeFilter === 'missing')   show = !has && !err;
-    else if (activeFilter === 'complete') show = has;
-    else if (activeFilter === 'tracked')  show = tracked;
-    else if (activeFilter === 'untracked') show = !tracked;
-    else if (activeFilter === 'errors')  show = err;
+    if (activeFilter === 'actionable') show = bucket === 'actionable';
+    else if (activeFilter === 'missing') show = bucket.startsWith('missing') || bucket === 'actionable';
+    else if (activeFilter === 'missing_no_source') show = bucket === 'missing_no_source';
+    else if (activeFilter === 'missing_unknown') show = bucket === 'missing_unknown';
+    else if (activeFilter === 'complete') show = bucket === 'complete';
+    else if (activeFilter === 'errors')  show = bucket === 'error';
     if (show && q && !(tr.dataset.title || '').includes(q)) show = false;
     tr.style.display = show ? '' : 'none';
-    if (show) shown++;
   });
 }
 

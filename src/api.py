@@ -936,9 +936,13 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
             cfg["paths"]["library_in_container"],
         )
         target_lang = cfg["target_language"]["audio"]
-        tracked_ids = set(int(k) for k in shows.load().keys())
+        tracked_raw = shows.load()
+        tracked_ids = set(int(k) for k in tracked_raw.keys())
+        # int-keyed lookup for the per-show source probe
+        tracked_cfg = {int(k): v for k, v in tracked_raw.items()}
         started = _disc.scan_in_background(
             _sonarr(), target_lang, path_remap, tracked_ids, config.data_dir(),
+            tracked_cfg=tracked_cfg,
         )
         return {"started": started, "already_running": not started}
 
