@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.5] — 2026-04-30
+
+### Performance
+- **Skip local-disk mux staging for files > 3 GB.** mkvmerge against large files (Bluray Remux 6-15 GB) becomes sequential-bandwidth bound. Local staging then adds a 50-60s copy-back trip without any small-write-latency win to amortize. Threshold drops the round-trip — saves ~52s per Bluray Remux episode on the sandbox. WEBDL/HDTV (1-2 GB) still gets the local-staging boost.
+- Logs the decision: \`target 6.6 GB > 3.0 GB — using target-FS staging (no copy-back)\`.
+
+### Fixed
+- **Orphan tempfiles from interrupted copy-backs are now swept** before each mux. Prior crashes / container restarts mid-copy-back left \`.dubsmith.<pid>.<ts>.mkv\` files (1-3 GB each) in library directories. Files older than 30 minutes get cleaned next time mux runs in that directory.
+
+### Tests
+- +3 cases (size threshold honored, orphan sweep, sweep called from inject). 122 total.
+
+[0.10.5]: https://github.com/luisesk/dubsmith/compare/v0.10.4...v0.10.5
+
 ## [0.10.4] — 2026-04-30
 
 ### Fixed

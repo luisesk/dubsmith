@@ -1,6 +1,6 @@
 [project]
 name = "dubsmith"
-version = "0.10.4"
+version = "0.10.5"
 description = "Auto-fetch missing language dubs from Crunchyroll and mux them into a Sonarr-managed library"
 requires-python = ">=3.11"
 dependencies = [

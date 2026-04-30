@@ -48,6 +48,15 @@ _LANG_SUFFIX = {
 # 1024 samples (~21ms @48kHz) so trim accuracy is well under sync error budget.
 _COPYABLE_CODECS = {"aac", "ac3", "eac3", "opus", "vorbis", "flac", "mp3"}
 
+# Above this size, local-disk mux staging is a net loss: mkvmerge becomes
+# sequential-bandwidth bound (no small-write latency to amortize), and the
+# copy-back round trip is pure overhead. 3 GB covers most WEBDL/HDTV with
+# room to spare; Bluray Remux (6-15 GB) hits the direct path.
+_LARGE_FILE_BYTES = 3 * 1024 ** 3
+
+# Orphan tempfiles older than this get swept on next mux run.
+_ORPHAN_MAX_AGE_S = 30 * 60  # 30 min
+
 
 def _filename_suffix(lang: str) -> str:
     return _LANG_SUFFIX.get(lang, f"Dub-{lang}")
@@ -138,6 +147,26 @@ def _stat_same_fs(a: Path, b: Path) -> bool:
         return False
 
 
+def _sweep_orphan_tempfiles(target_dir: Path) -> int:
+    """Remove stale `.dubsmith.*.mkv` tempfiles from prior interrupted copy-backs.
+    Returns count removed."""
+    n = 0
+    cutoff = time.time() - _ORPHAN_MAX_AGE_S
+    try:
+        for p in target_dir.glob(".dubsmith.*.mkv"):
+            try:
+                if p.stat().st_mtime < cutoff:
+                    sz = p.stat().st_size
+                    p.unlink()
+                    n += 1
+                    log.info("swept orphan tempfile %s (%.1f MB)", p, sz / 1024 / 1024)
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return n
+
+
 def inject(target: str, source: str, delay_ms: int,
            lang: str = "por", track_name: str = "Portuguese Brazil",
            mux_workdir: str | None = None) -> str:
@@ -171,11 +200,21 @@ def inject(target: str, source: str, delay_ms: int,
         ]
         log.info("stripping existing %s audio; keeping audio tracks %s", lang, keep_audio_indices)
 
+    # Sweep any orphan tempfiles from prior interrupted copy-backs in target dir.
+    _sweep_orphan_tempfiles(target_dir)
+
     # Pick tempdir parent. Prefer mux_workdir (local disk) for speed; fall back
-    # to target_dir if it doesn't exist or isn't writable.
+    # to target_dir if it doesn't exist or isn't writable. Skip local staging
+    # for huge files where the copy-back round-trip outweighs the small-write
+    # latency benefit on NFS.
     work_parent = target_dir
     work_local = False
-    if mux_workdir:
+    target_size = 0
+    try:
+        target_size = target_p.stat().st_size
+    except OSError:
+        pass
+    if mux_workdir and target_size <= _LARGE_FILE_BYTES:
         wp = Path(mux_workdir)
         try:
             wp.mkdir(parents=True, exist_ok=True)
@@ -183,6 +222,9 @@ def inject(target: str, source: str, delay_ms: int,
             work_local = not _stat_same_fs(wp, target_dir)
         except OSError as e:
             log.warning("mux_workdir %s not usable (%s); falling back to target dir", mux_workdir, e)
+    elif mux_workdir:
+        log.info("target %.1f GB > %.1f GB — using target-FS staging (no copy-back)",
+                 target_size / 1024 ** 3, _LARGE_FILE_BYTES / 1024 ** 3)
 
     with tempfile.TemporaryDirectory(dir=work_parent, prefix="dubsmith-mux-") as td:
         out_tmp = os.path.join(td, "out.mkv")
