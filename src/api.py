@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import __version__, alerts, config, downloader, health, logbuf, probe, reconcile, scanner, security
+from . import __version__, alerts, config, downloader, events, health, logbuf, probe, reconcile, scanner, security
 from .audit import AuditLog
 from .queue import Queue
 from .settings_store import SettingsStore
@@ -44,8 +44,13 @@ def _sonarr_creds(cfg: dict, settings: SettingsStore | None = None) -> tuple[str
 def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
              sources: SourcesStore | None = None,
              settings: SettingsStore | None = None,
-             users: UsersStore | None = None) -> FastAPI:
+             users: UsersStore | None = None,
+             sonarr_cache=None) -> FastAPI:
     app = FastAPI(title="Dubsmith", version=__version__)
+    # gzip everything > 500B; saves ~70-80% on the heavy HTML pages
+    # (/library, /shows, /discover render hundreds of <tr> rows).
+    from starlette.middleware.gzip import GZipMiddleware
+    app.add_middleware(GZipMiddleware, minimum_size=500)
     login_throttle = security.LoginThrottle(max_attempts=5, window_seconds=300, lockout_seconds=900)
     pw_throttle = security.LoginThrottle(max_attempts=5, window_seconds=300, lockout_seconds=900)
     audit = AuditLog(config.data_dir() / "audit.log")
@@ -68,6 +73,13 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
     def _sonarr() -> Sonarr:
         url, key = _sonarr_creds(cfg, settings)
         return Sonarr(url, key)
+
+    def _sonarr_for_reads():
+        """Prefer SonarrCache (local) for read methods. Falls through to live
+        Sonarr only when cache is empty (e.g. first run before initial sync)."""
+        if sonarr_cache and not sonarr_cache.is_empty():
+            return sonarr_cache
+        return _sonarr()
     if STATIC_DIR.exists():
         app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -513,7 +525,7 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
 
     @app.get("/api/shows/sonarr", dependencies=[Depends(require_auth)])
     def list_sonarr_series():
-        sonarr = _sonarr()
+        sonarr = _sonarr_for_reads()
         out = []
         for s in sonarr.all_series():
             out.append({
@@ -608,7 +620,7 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
 
     @app.get("/shows", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
     def shows_page(request: Request):
-        sonarr = _sonarr()
+        sonarr = _sonarr_for_reads()
         try:
             all_series = sonarr.all_series()
         except Exception:
@@ -631,9 +643,13 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
 
     @app.get("/shows/add/{series_id}", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
     def add_show_wizard(request: Request, series_id: int):
-        sonarr = _sonarr()
+        sonarr = _sonarr_for_reads()
         try:
             series = sonarr.series(series_id)
+            if series is None:
+                raise HTTPException(404, f"series {series_id} not in cache; refresh cache from settings")
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(404, f"sonarr series {series_id}: {e}")
         # Run CR search automatically with title
@@ -669,10 +685,15 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
         if cache_path.exists():
             return FileResponse(cache_path, media_type="image/jpeg",
                                 headers={"Cache-Control": "public, max-age=86400"})
-        sonarr = _sonarr()
         sonarr_url, sonarr_key = _sonarr_creds(cfg, settings)
+        # Read image URLs from cache (drop cold sonarr.series() call). Cache
+        # always has the series payload after first sync; this avoids
+        # serializing 351 cold cover lookups on first /library load.
+        sonarr = _sonarr_for_reads()
         try:
             s = sonarr.series(series_id)
+            if s is None:
+                raise HTTPException(404)
             for img in s.get("images", []) or []:
                 if img.get("coverType") == cover_type:
                     url = img.get("remoteUrl") or img.get("url")
@@ -714,10 +735,14 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
 
     @app.get("/show/{series_id}", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
     def show_detail(request: Request, series_id: int):
-        sonarr = _sonarr()
+        sonarr = _sonarr_for_reads()
         show = shows.get(series_id) or {}
         try:
             series = sonarr.series(series_id)
+            if series is None:
+                raise HTTPException(404, f"series {series_id} not in cache")
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(404, f"sonarr {series_id}: {e}")
         try:
@@ -939,7 +964,7 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
 
     @app.get("/library", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
     def library_page(request: Request, sid: int | None = None):
-        sonarr = _sonarr()
+        sonarr = _sonarr_for_reads()
         tracked = shows.load()
         sections = []
         items = tracked.items() if sid is None else [(sid, tracked.get(sid) or tracked.get(str(sid)) or {})]
@@ -1230,6 +1255,60 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
             _os.kill(_os.getpid(), _signal.SIGTERM)
         _threading.Thread(target=_kill, daemon=True).start()
         return {"ok": True, "message": "restart requested; container should be back in <10s"}
+
+    # ---------- SSE event stream ----------
+    @app.get("/events")
+    async def event_stream(request: Request):
+        """Server-Sent Events: pushes job state changes + queue stats to the
+        browser. Replaces the per-job polling loop. One open connection per
+        browser tab."""
+        from fastapi.responses import StreamingResponse
+        from .events import format_sse
+
+        bus = events.get_bus()
+        sub_id, q = bus.subscribe()
+
+        async def gen():
+            # Initial snapshot so the page can render without waiting for first event
+            yield format_sse({"ts": __import__("time").time(), "kind": "snapshot",
+                              "data": {"stats": queue.stats()}})
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        evt = await asyncio.wait_for(q.get(), timeout=15)
+                        yield format_sse(evt)
+                    except asyncio.TimeoutError:
+                        # Heartbeat to keep the connection alive through proxies.
+                        yield ": ping\n\n"
+            finally:
+                bus.unsubscribe(sub_id)
+
+        return StreamingResponse(gen(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache",
+                                          "X-Accel-Buffering": "no"})
+
+    # ---------- Sonarr cache management ----------
+    @app.get("/api/sonarr-cache", dependencies=[Depends(require_auth)])
+    def sonarr_cache_status():
+        if not sonarr_cache:
+            return {"enabled": False}
+        s = sonarr_cache.stats()
+        return {"enabled": True, **s}
+
+    @app.post("/api/sonarr-cache/refresh", dependencies=[Depends(require_operator)])
+    def sonarr_cache_refresh(payload: dict | None = None,
+                              request: Request = None,
+                              current: str = Depends(require_auth)):
+        if not sonarr_cache:
+            raise HTTPException(503, "sonarr cache not enabled")
+        prefetch = bool((payload or {}).get("prefetch_images", True))
+        sonarr_cache.sync_in_background(prefetch_images=prefetch)
+        ip = request.client.host if request and request.client else "?"
+        audit.write(actor=current, ip=ip, action="sonarr_cache.refresh",
+                    prefetch_images=prefetch)
+        return {"started": True}
 
     # ---------- alerts ----------
     @app.get("/api/alerts", dependencies=[Depends(require_auth)])

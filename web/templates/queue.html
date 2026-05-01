@@ -101,11 +101,37 @@
 </div>
 
 <script>
+// Server-Sent Events: backend pushes job state changes when worker emits them.
+// Replaces the per-row polling loop. One open connection per browser tab; the
+// browser's EventSource API auto-reconnects on transient failures.
+(function setupQueueSSE() {
+  if (!window.EventSource) return;
+  const es = new EventSource('/events');
+  let reloadTimer = null;
+  function scheduleReload() {
+    if (reloadTimer) return;
+    reloadTimer = setTimeout(() => softReload(), 600);
+  }
+  es.addEventListener('job', (e) => {
+    try {
+      const evt = JSON.parse(e.data);
+      const j = evt.data || {};
+      // Any state change for a visible row → soft-reload to pick up the new
+      // server-rendered state (pills, action buttons, progress).
+      const card = document.querySelector(`[data-jobid="${j.id}"]`);
+      if (card || ['done','failed','quarantined'].includes(j.state)) {
+        scheduleReload();
+      }
+    } catch {}
+  });
+})();
+
+// Lightweight progress poll for ACTIVE rows only — SSE doesn't carry sub-state
+// progress. 3s cadence is plenty.
 async function refreshLiveJobs() {
-  const cards = document.querySelectorAll('[data-jobid]');
-  for (const card of cards) {
-    const bar = card.querySelector('[data-bar]');
-    if (!bar) continue;  // not a running card
+  const cards = document.querySelectorAll('[data-jobid] [data-bar]');
+  for (const bar of cards) {
+    const card = bar.closest('[data-jobid]');
     const id = card.dataset.jobid;
     try {
       const r = await fetch(`/api/jobs/${id}`, {credentials:'same-origin'});
@@ -123,7 +149,7 @@ async function refreshLiveJobs() {
     } catch {}
   }
 }
-setInterval(refreshLiveJobs, 2500);
+setInterval(refreshLiveJobs, 3000);
 
 async function manualDelay(jobId, currentMs) {
   const v = prompt(`Manual sync delay in milliseconds for job ${jobId}.\n\nPositive = pad the dub with leading silence (delay it).\nNegative = trim the dub's leading silence.\nDetected: ${currentMs} ms`,

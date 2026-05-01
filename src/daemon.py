@@ -6,7 +6,7 @@ import time
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import config, health, logbuf, reconcile, scanner, staging
+from . import config, health, logbuf, reconcile, scanner, sonarr_cache as _sc, staging
 from .api import make_app
 from .queue import Queue
 from .settings_store import SettingsStore
@@ -173,6 +173,12 @@ def run() -> None:
         hours=cfg.get("scheduler", {}).get("reconcile_interval_hours", 24),
         next_run_time=None,
     )
+    sched.add_job(
+        lambda: sonarr_cache.sync(prefetch_images=True),
+        "interval",
+        minutes=cfg.get("scheduler", {}).get("sonarr_cache_interval_minutes", 30),
+        next_run_time=None,
+    )
     sched.start()
     # Initial health probe in background so dashboard reflects state on first load
     threading.Thread(target=lambda: health.run_all_checks(sources), daemon=True).start()
@@ -180,7 +186,20 @@ def run() -> None:
     # initial scan on startup
     threading.Thread(target=lambda: _scan_all(cfg, queue, shows), daemon=True).start()
 
-    app = make_app(cfg, queue, shows, sources, settings, users)
+    # Build Sonarr shadow cache. UI reads from this; live Sonarr only on miss.
+    sonarr_for_cache = Sonarr(cfg["sonarr"]["url"], cfg["sonarr"]["api_key"])
+    sonarr_cache = _sc.SonarrCache(sonarr_for_cache, config.data_dir())
+    if sonarr_cache.is_empty():
+        log.info("sonarr cache empty — kicking initial background sync")
+        sonarr_cache.sync_in_background()
+    else:
+        age = (sonarr_cache.last_sync_ts() and
+               (__import__("time").time() - sonarr_cache.last_sync_ts())) or 0
+        log.info("sonarr cache loaded: %d series, %.0f min old",
+                 sonarr_cache.stats().get("series", 0), age / 60)
+
+    app = make_app(cfg, queue, shows, sources, settings, users,
+                   sonarr_cache=sonarr_cache)
     port = int(cfg.get("api", {}).get("port", 8080))
     log.info("api on :%d", port)
     try:

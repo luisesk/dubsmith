@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-05-01
+
+Architecture pass: eliminate Sonarr from the hot UI path, push job updates instead of polling, gzip the heavy pages.
+
+### Added
+- **Local Sonarr shadow cache** (\`src/sonarr_cache.py\`). Periodic full sync (default every 30 min) pulls every \`series\` + per-series \`episode_files\` + \`episodes\` into \`/data/cache/sonarr.json\`. Posters and fanarts are pre-fetched to disk during sync so the UI never has to do a cold image fetch on first page load.
+  - UI reads (Library, Shows, Discover, /show/{id}, /shows/add, /api/shows/sonarr, image proxy) all serve from cache. Live Sonarr only on cache miss or write ops (\`rescan_series\`, \`unmonitor_episode\`).
+  - Initial sync kicks off in background on daemon startup if cache is empty.
+  - Manual refresh: \`POST /api/sonarr-cache/refresh\`. Status: \`GET /api/sonarr-cache\`.
+- **Server-Sent Events (\`/events\`)**. Worker emits \`job\` events on state changes; browser tabs subscribe via one persistent \`EventSource\` connection. Replaces the per-row polling loop on \`/queue-page\`. Stays alive through proxies via 15s heartbeats.
+- **\`src/events.py\`**: in-process pub/sub bus. Threadsafe publish (worker thread) → asyncio queues (SSE handlers). Drops events for slow consumers instead of blocking. Replay buffer for late subscribers.
+- \`gzip\` middleware (Starlette built-in). Compresses HTML > 500B — the 351-row \`/library\` and \`/shows\` pages drop ~70-80% in transfer size.
+
+### Architecture notes
+- **No external broker.** Considered Redis/RabbitMQ; rejected for this single-user single-process workload — adds operational weight with zero observable benefit. SQLite WAL is the right queue substrate.
+- **SSE not WebSocket.** One-way server→browser fits the use case; native EventSource API; auto-reconnects; goes through reverse proxies cleanly.
+
+[0.11.0]: https://github.com/luisesk/dubsmith/compare/v0.10.16...v0.11.0
+
 ## [0.10.16] — 2026-05-01
 
 ### Performance / reliability

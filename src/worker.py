@@ -2,7 +2,7 @@
 import logging
 from pathlib import Path
 
-from . import downloader, health, mux, notify, probe, staging, sync
+from . import downloader, events, health, mux, notify, probe, staging, sync
 from .downloader import MdnxDownloader
 from .queue import Job, Queue
 from .shows import ShowsStore
@@ -28,6 +28,14 @@ class Worker:
 
     def process(self, job: Job) -> None:
         cfg = self.cfg
+        bus = events.get_bus()
+
+        def emit(state: str, **extra) -> None:
+            bus.publish("job", {"id": job.id, "series_id": job.series_id,
+                                 "season": job.season, "episode": job.episode,
+                                 "state": state, **extra})
+
+        emit("started")
         show = self.shows.get(job.series_id) or cfg.get("shows", {}).get(job.series_id) or cfg.get("shows", {}).get(str(job.series_id))
         if not show:
             self.queue.set_state(job.id, "failed", last_error=f"no show config for series {job.series_id}")
@@ -190,6 +198,7 @@ class Worker:
         # re-detect) operate on the file that actually exists post-mux.
         _clean()
         self.queue.set_state(job.id, "done", target_path=final_path)
+        emit("done", sync_delay_ms=result_delay)
         log.info("done: job %d", job.id)
         # trigger Sonarr rescan so DB picks up new filename
         settings_data = self.settings.load() if self.settings else {}
