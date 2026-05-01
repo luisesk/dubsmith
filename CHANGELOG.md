@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.12] — 2026-04-30
+
+### Build
+- Move mdnx \`chmod -R\` and dir cleanup into the builder stage. The runtime stage was re-stamping every mdnx file's permission bits, which created a duplicate ~33 MB compressed layer. Now the COPY brings in already-correct perms.
+
+[0.10.12]: https://github.com/luisesk/dubsmith/compare/v0.10.11...v0.10.12
+
 ## [0.10.11] — 2026-04-30
 
 ### Build

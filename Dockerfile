@@ -18,11 +18,16 @@ RUN curl -fsSL "https://github.com/shaka-project/shaka-packager/releases/downloa
     --create-dirs \
     && chmod +x /out/shaka-packager
 
-# multi-downloader-nx (mdnx) CLI binary
+# multi-downloader-nx (mdnx) CLI binary. Apply runtime perms + dir prep here so
+# the runtime stage doesn't need a second `chmod -R` layer that would duplicate
+# the mdnx content's compressed weight.
 RUN mkdir -p /opt/mdnx \
     && curl -fsSL "https://github.com/anidl/multi-downloader-nx/releases/download/${MDNX_VERSION}/multi-downloader-nx-linux-x64-cli.7z" -o /tmp/mdnx.7z \
     && 7z x -y -o/opt/mdnx /tmp/mdnx.7z >/dev/null \
-    && rm /tmp/mdnx.7z
+    && rm /tmp/mdnx.7z \
+    && chmod -R a+rwX /opt/mdnx \
+    && rm -rf /opt/mdnx/multi-downloader-nx-linux-x64-cli/widevine \
+              /opt/mdnx/multi-downloader-nx-linux-x64-cli/config
 
 # Pre-build all python wheels into /wheels — the runtime stage installs from
 # this dir and never touches the network or pip's HTTP cache.
@@ -59,10 +64,9 @@ RUN --mount=type=bind,from=builder,source=/wheels,target=/wheels \
         httpx numpy scipy PyYAML click fastapi 'uvicorn[standard]' \
         APScheduler Jinja2 python-multipart itsdangerous
 
-# Symlink mdnx CLI; relax permissions so any uid can use it.
+# Symlink mdnx CLI (perms already set in builder).
 RUN find /opt/mdnx -maxdepth 2 -type f -executable -name 'aniDL' \
-        -exec ln -sf {} /usr/local/bin/aniDL \; \
-    && chmod -R a+rwX /opt/mdnx
+        -exec ln -sf {} /usr/local/bin/aniDL \;
 
 WORKDIR /app
 COPY src ./src
@@ -72,11 +76,9 @@ ENV PYTHONPATH=/app
 VOLUME ["/data"]
 
 # Symlink mdnx widevine + config dirs into /data so they survive container
-# recreate and work under any uid (chosen via compose `user:`).
-RUN rmdir /opt/mdnx/multi-downloader-nx-linux-x64-cli/widevine 2>/dev/null || true \
-    && rm -rf /opt/mdnx/multi-downloader-nx-linux-x64-cli/widevine \
-    && rm -rf /opt/mdnx/multi-downloader-nx-linux-x64-cli/config \
-    && ln -s /data/widevine /opt/mdnx/multi-downloader-nx-linux-x64-cli/widevine \
+# recreate and work under any uid (chosen via compose `user:`). The original
+# dirs were already removed in the builder stage, so we just create the links.
+RUN ln -s /data/widevine /opt/mdnx/multi-downloader-nx-linux-x64-cli/widevine \
     && ln -s /data/mdnx/install-config /opt/mdnx/multi-downloader-nx-linux-x64-cli/config
 
 ENV DUBSMITH_CONFIG=/data/config.yml \
