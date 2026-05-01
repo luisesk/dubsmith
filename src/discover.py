@@ -185,8 +185,9 @@ def _scan_one(series: dict, sonarr, target_lang: str,
 def scan_all(sonarr, target_lang: str, path_remap: tuple[str, str],
              tracked_ids: set[int], data_dir: Path | str,
              tracked_cfg: dict | None = None,
-             max_workers: int = 4,
-             save_every: int = 25) -> dict:
+             max_workers: int = 2,
+             save_every: int = 25,
+             pause_check=None) -> dict:
     """Run a full library scan and persist results.
 
     Probes ffprobe + source availability in parallel via ThreadPoolExecutor.
@@ -225,9 +226,21 @@ def scan_all(sonarr, target_lang: str, path_remap: tuple[str, str],
             workers = max(1, int(max_workers))
             log.info("discover: starting scan of %d series with %d workers", total, workers)
 
+            def _wrapped(s):
+                # Yield to the worker pipeline if it's actively chewing on a job:
+                # NFS bandwidth is shared, and 4 parallel mdnx probes alongside
+                # an active download spike load average to 35+. Wait until idle.
+                if pause_check is not None:
+                    backoff = 0
+                    while pause_check():
+                        if backoff < 30:
+                            backoff += 5
+                        time.sleep(backoff)
+                return _task(s)
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=workers,
                                                       thread_name_prefix="disc") as ex:
-                futures = {ex.submit(_task, s): s for s in series_list}
+                futures = {ex.submit(_wrapped, s): s for s in series_list}
                 for fut in concurrent.futures.as_completed(futures):
                     try:
                         row = fut.result()
@@ -276,13 +289,15 @@ def scan_all(sonarr, target_lang: str, path_remap: tuple[str, str],
 
 
 def scan_in_background(sonarr, target_lang: str, path_remap, tracked_ids,
-                        data_dir, tracked_cfg=None, max_workers: int = 4) -> bool:
+                        data_dir, tracked_cfg=None, max_workers: int = 2,
+                        pause_check=None) -> bool:
     if _RUNNING["value"]:
         return False
     threading.Thread(
         target=scan_all,
         args=(sonarr, target_lang, path_remap, tracked_ids, data_dir,
               tracked_cfg, max_workers),
+        kwargs={"pause_check": pause_check},
         daemon=True, name="discover-scan",
     ).start()
     return True

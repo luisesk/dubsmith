@@ -417,10 +417,23 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
             queue.set_state(jid, "pending", last_error=None)
         return {"job_id": jid}
 
+    # /api/metrics is hit on every page nav AND polled by the topbar widget.
+    # Cache for 2s to avoid hammering sqlite when the UI fans out 5-10 calls.
+    _metrics_cache = {"ts": 0.0, "data": None}
+    import time as _time_mod
+    def _metrics_payload():
+        now = _time_mod.time()
+        if _metrics_cache["data"] is not None and now - _metrics_cache["ts"] < 2.0:
+            return _metrics_cache["data"]
+        d = {**queue.metrics(), "stats": queue.stats(),
+             "per_series": queue.stats_per_series()}
+        _metrics_cache["data"] = d
+        _metrics_cache["ts"] = now
+        return d
+
     @app.get("/api/metrics", dependencies=[Depends(require_auth)])
     def metrics():
-        return {**queue.metrics(), "stats": queue.stats(),
-                "per_series": queue.stats_per_series()}
+        return _metrics_payload()
 
     @app.get("/metrics", response_class=PlainTextResponse)
     def prom_metrics():
@@ -992,10 +1005,18 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
         tracked_raw = shows.load()
         tracked_ids = set(int(k) for k in tracked_raw.keys())
         tracked_cfg = {int(k): v for k, v in tracked_raw.items()}
-        max_workers = int(cfg.get("scheduler", {}).get("discover_workers", 4))
+        max_workers = int(cfg.get("scheduler", {}).get("discover_workers", 2))
+
+        # When the worker pipeline is actively downloading/syncing/muxing, NFS
+        # bandwidth is shared. Yield to it instead of competing.
+        def _worker_busy():
+            s = queue.stats()
+            return any(s.get(st, 0) > 0 for st in ("downloading", "syncing", "muxing"))
+
         started = _disc.scan_in_background(
             _sonarr(), target_lang, path_remap, tracked_ids, config.data_dir(),
             tracked_cfg=tracked_cfg, max_workers=max_workers,
+            pause_check=_worker_busy,
         )
         return {"started": started, "already_running": not started}
 

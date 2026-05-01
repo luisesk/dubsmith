@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.15] — 2026-05-01
+
+### Performance
+- **I/O contention fix.** Sandbox saw load average spike to 35+ during discover scans running alongside an active worker pipeline — UI got sluggish despite low CPU/RAM. Three changes:
+  - Discover scan default workers: 4 → 2.
+  - Discover scan now **yields to the worker pipeline**: a per-task pause-check waits with backoff while any job is in \`downloading\`/\`syncing\`/\`muxing\` state. Discover resumes when the queue is idle.
+  - \`/api/metrics\` is cached for 2 seconds. The endpoint is hit on every page navigation plus the topbar's queue-count widget; un-cached it spammed sqlite under heavy UI load.
+- UI polls relaxed:
+  - Per-job poll on \`/queue-page\`: 1.5s → 2.5s.
+  - Live log refresh: 4s → 6s.
+
+[0.10.15]: https://github.com/luisesk/dubsmith/compare/v0.10.14...v0.10.15
+
 ## [0.10.14] — 2026-05-01
 
 ### Added

@@ -92,7 +92,7 @@
         <div class="card-title">Live log</div>
         <a class="card-action" href="/logs">Open file ›</a>
       </div>
-      <pre id="live-log" hx-get="/api/logs.txt?lines=20" hx-trigger="load, every 4s" hx-swap="innerHTML"
+      <pre id="live-log" hx-get="/api/logs.txt?lines=20" hx-trigger="load, every 6s" hx-swap="innerHTML"
         style="margin:0;padding:12px;font-family:var(--af-font-mono);font-size:10.5px;line-height:1.55;color:var(--af-text);background:var(--af-bg-input);max-height:380px;overflow:auto;white-space:pre-wrap;word-break:break-all;">
         loading…
       </pre>
@@ -123,7 +123,7 @@ async function refreshLiveJobs() {
     } catch {}
   }
 }
-setInterval(refreshLiveJobs, 1500);
+setInterval(refreshLiveJobs, 2500);
 
 async function manualDelay(jobId, currentMs) {
   const v = prompt(`Manual sync delay in milliseconds for job ${jobId}.\n\nPositive = pad the dub with leading silence (delay it).\nNegative = trim the dub's leading silence.\nDetected: ${currentMs} ms`,
