@@ -2,7 +2,7 @@
 import logging
 from pathlib import Path
 
-from . import health, mux, notify, probe, staging, sync
+from . import downloader, health, mux, notify, probe, staging, sync
 from .downloader import MdnxDownloader
 from .queue import Job, Queue
 from .shows import ShowsStore
@@ -86,10 +86,29 @@ class Worker:
             src_path = self.dl.download_audio(cr_season_id, cr_ep, job.season, on_progress=on_prog)
         except Exception as e:
             err = str(e)
-            self.queue.set_state(job.id, "failed", last_error=f"download: {err}")
-            # Specific error pattern: mdnx couldn't pick the episode — usually stale token
-            if "Episodes not selected" in err or "Anonymous" in err:
+            # Auto-recovery: when mdnx returns "Episodes not selected!" for a season
+            # without a season_offset configured, probe the season's first absolute
+            # episode number, save the inferred offset to shows.yml, and retry.
+            # Crunchyroll continuation cours start at non-1 absolute numbers
+            # (S02 starts at 13, etc.) and need this offset.
+            if "Episodes not selected" in err:
+                season_offset_cur = season_offset.get(str(job.season), 0)
+                if season_offset_cur == 0:
+                    first = downloader.probe_season_first_ep(cr_season_id, source=self.dl.source)
+                    if first and first > 1:
+                        offset = first - 1
+                        log.info("auto-detected season_offset for sid=%d S%02d: %d (CR season starts at ep %d)",
+                                 job.series_id, job.season, offset, first)
+                        new_offsets = dict(season_offset)
+                        new_offsets[str(job.season)] = offset
+                        self.shows.upsert(job.series_id, season_offset=new_offsets)
+                        # Reset to pending — next worker pickup will use the new offset.
+                        self.queue.set_state(job.id, "pending",
+                                             last_error=f"auto-detected season_offset={offset}, retrying")
+                        _clean()
+                        return
                 health.report_episodes_not_selected()
+            self.queue.set_state(job.id, "failed", last_error=f"download: {err}")
             _clean()
             return
 

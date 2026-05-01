@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.13] — 2026-05-01
+
+### Fixed
+- **Auto-detect \`season_offset\` for CR continuation cours.** Crunchyroll splits multi-cour shows into separate season IDs that often start at non-1 absolute episode numbers (MF GHOST S02 starts at episode 13, S03 at 25, etc.). mdnx's \`-e <N>\` flag wants ABSOLUTE numbers, so calling \`-e 1\` on such a season returns "Episodes not selected!" with no useful diagnostic. When the worker hits this error AND the show has no \`season_offset\` configured for that season, it now probes mdnx's listing, computes \`offset = first_ep - 1\`, saves it to \`shows.yml\`, and re-queues the job. Self-heals on first run.
+- New helper \`downloader.probe_season_first_ep(cr_id, source)\` parses mdnx's listing for the lowest absolute episode number.
+
+### Tests
+- +6 cases (continuation-cour detection, normal season, malformed listings, security validation, subprocess errors, min selection). 136 total.
+
+[0.10.13]: https://github.com/luisesk/dubsmith/compare/v0.10.12...v0.10.13
+
 ## [0.10.12] — 2026-04-30
 
 ### Build

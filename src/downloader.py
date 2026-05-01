@@ -32,6 +32,32 @@ def _service(source: str) -> str:
     return SERVICE_MAP.get((source or "crunchyroll").lower(), "crunchy")
 
 
+def probe_season_first_ep(cr_season_id: str, timeout: int = 30,
+                           source: str = "crunchyroll") -> int | None:
+    """Return the lowest absolute episode number listed for a CR season, or None.
+
+    Crunchyroll splits shows into multiple "seasons" that map to per-cour CR
+    season IDs. A season may start at episode 13 or 25 etc. when it's a
+    continuation cour. mdnx's `-e <N>` flag wants ABSOLUTE episode numbers.
+    Use this to compute the offset between Sonarr's per-season episode and
+    the CR absolute number.
+    """
+    if not security.valid_cr_id(cr_season_id):
+        return None
+    try:
+        r = subprocess.run(
+            ["aniDL", "--service", _service(source), "-s", cr_season_id],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except Exception as e:
+        log.warning("probe_season_first_ep failed: %s", e)
+        return None
+    # Lines like '  [13|E:GN7UD2GJ1] ...'  → grab '13'
+    pat = re.compile(r"^\s+\[(\d+)\|", re.MULTILINE)
+    nums = [int(m.group(1)) for m in pat.finditer(r.stdout or "")]
+    return min(nums) if nums else None
+
+
 def probe_season_dubs(cr_season_id: str, timeout: int = 60, source: str = "crunchyroll") -> list[str]:
     """Return list of available dub language codes for a season ID via mdnx --series."""
     if not security.valid_cr_id(cr_season_id):
