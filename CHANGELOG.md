@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.9] — 2026-04-30
+
+### Build
+- **Multi-stage Dockerfile**: builder stage downloads mdnx + shaka-packager and pre-builds python wheels; runtime stage installs from those wheels and ships only \`ffmpeg\`, \`mkvtoolnix\`, \`ca-certificates\` from apt. \`curl\` and \`p7zip-full\` no longer in the final image. Pip cache layer also dropped.
+- Behavior unchanged. Image is bit-for-bit equivalent at runtime; only the install path differs.
+
+[0.10.9]: https://github.com/luisesk/dubsmith/compare/v0.10.8...v0.10.9
+
 ## [0.10.8] — 2026-04-30
 
 ### UI
