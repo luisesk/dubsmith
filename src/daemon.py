@@ -6,7 +6,7 @@ import time
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import config, health, logbuf, reconcile, scanner, sonarr_cache as _sc, staging
+from . import config, health, logbuf, mux, reconcile, scanner, sonarr_cache as _sc, staging
 from .api import make_app
 from .queue import Queue
 from .settings_store import SettingsStore
@@ -111,15 +111,20 @@ def run() -> None:
             shows.upsert(int(sid), **sh)
 
     stop = threading.Event()
-    # Single sequential worker: mdnx has known parallelism bugs (ENOENT on temp-file
-    # rename, config-race during boot). Sequential keeps things robust; a download +
-    # sync + mux cycle is ~2-3 min anyway.
-    log.info("starting worker thread")
-    threading.Thread(
-        target=_worker_loop,
-        args=("w1", cfg, queue, shows, settings, stop),
-        daemon=True, name="worker-1",
-    ).start()
+    # Worker count: settings.concurrency.workers (default 1). Multiple workers
+    # run download + sync in parallel — pipeline parallelism. Mux serializes
+    # via a semaphore in mux.py to keep NFS bandwidth predictable.
+    settings_data = settings.load()
+    n_workers = max(1, int(((settings_data or {}).get("concurrency") or {}).get("workers", 1)))
+    n_mux = max(1, int(((settings_data or {}).get("concurrency") or {}).get("mux", 1)))
+    mux.set_mux_concurrency(n_mux)
+    log.info("starting %d worker thread(s) · mux concurrency=%d", n_workers, n_mux)
+    for i in range(n_workers):
+        threading.Thread(
+            target=_worker_loop,
+            args=(f"w{i+1}", cfg, queue, shows, settings, stop),
+            daemon=True, name=f"worker-{i+1}",
+        ).start()
 
     # Startup janitor: nuke episode dirs older than 7 days (or what config says)
     staging_root = cfg["paths"]["staging"]

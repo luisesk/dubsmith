@@ -25,6 +25,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -56,6 +57,20 @@ _LARGE_FILE_BYTES = 3 * 1024 ** 3
 
 # Orphan tempfiles older than this get swept on next mux run.
 _ORPHAN_MAX_AGE_S = 30 * 60  # 30 min
+
+# Process-wide cap on concurrent mkvmerge runs. mkvmerge is NFS-I/O bound
+# for big files; running 2+ in parallel splits bandwidth without speeding
+# anything up — and adds load contention with the worker download phase.
+# Workers can still run download + sync in parallel; only mux serializes here.
+_MUX_SEM = threading.Semaphore(1)
+
+
+def set_mux_concurrency(n: int) -> None:
+    """Replace the mux semaphore with a new permit count. Call at daemon
+    startup to override the default of 1 (e.g. on local-disk libraries
+    where mkvmerge isn't NFS-bound)."""
+    global _MUX_SEM
+    _MUX_SEM = threading.Semaphore(max(1, int(n)))
 
 
 def _filename_suffix(lang: str) -> str:
@@ -277,7 +292,9 @@ def inject(target: str, source: str, delay_ms: int,
         ]
         log.info("mkvmerge%s: %s", " (local-staged)" if work_local else "", " ".join(cmd))
         t_mux = time.time()
-        _run_mkvmerge(cmd)
+        # Serialize mkvmerge across workers to avoid NFS bandwidth fight.
+        with _MUX_SEM:
+            _run_mkvmerge(cmd)
         log.info("mkvmerge: %.1fs", time.time() - t_mux)
 
         orig_size = target_p.stat().st_size

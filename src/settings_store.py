@@ -31,6 +31,10 @@ DEFAULTS = {
     "library": {
         "show_posters": True,
     },
+    "concurrency": {
+        "workers": 1,    # parallel pipeline workers (download + sync stages)
+        "mux": 1,        # parallel mkvmerge runs (keep at 1 on NFS libraries)
+    },
     "ui": {
         "theme": "dark",
         "density": "comfortable",

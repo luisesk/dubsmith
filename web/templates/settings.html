@@ -147,6 +147,40 @@
 </div>
 
 <div class="card">
+  <div class="card-head">
+    <div class="card-title">Pipeline concurrency</div>
+    <span class="card-action">restart required after change</span>
+  </div>
+  <div class="card-body">
+    <div style="color:var(--af-text-mute);font-size:12px;margin-bottom:8px;">
+      Multi-worker enables pipeline parallelism — while one job mux-es (NFS-bound), another can download (network-bound). Mux is capped separately because mkvmerge fights itself on shared NFS bandwidth. Recommended: <b>workers=2-3</b>, <b>mux=1</b> on NFS libraries.
+    </div>
+    <div id="concurrency-warn" style="display:none;padding:10px 12px;border-radius:8px;background:color-mix(in oklab, var(--af-warn) 14%, transparent);color:var(--af-warn);font-size:12px;border:1px solid color-mix(in oklab, var(--af-warn) 30%, transparent);margin-bottom:14px;">
+      ⚠ Saved. <b>Restart container</b> for the new worker count to take effect.
+      <button class="btn sm" onclick="restartDaemon()">Restart now</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;padding:10px 0;">
+      <div>
+        <div style="font-weight:600;">Pipeline workers</div>
+        <div style="color:var(--af-text-mute);font-size:12px;">Parallel jobs running download + sync stages.</div>
+      </div>
+      <input type="number" min="1" max="8" value="{{ settings.concurrency.workers }}"
+        onchange="setConcurrency('workers', parseInt(this.value)); document.getElementById('concurrency-warn').style.display='block';"
+        style="width:80px;background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:6px 10px;color:var(--af-text);font-family:var(--af-font-mono);">
+    </div>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;padding:10px 0;border-top:1px solid var(--af-border);">
+      <div>
+        <div style="font-weight:600;">Concurrent mkvmerge</div>
+        <div style="color:var(--af-text-mute);font-size:12px;">Keep at 1 unless your library is on local SSD with bandwidth to spare.</div>
+      </div>
+      <input type="number" min="1" max="4" value="{{ settings.concurrency.mux }}"
+        onchange="setConcurrency('mux', parseInt(this.value)); document.getElementById('concurrency-warn').style.display='block';"
+        style="width:80px;background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;padding:6px 10px;color:var(--af-text);font-family:var(--af-font-mono);">
+    </div>
+  </div>
+</div>
+
+<div class="card">
   <div class="card-head"><div class="card-title">Sync detection</div></div>
   <div class="card-body">
     <div style="display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center;padding:10px 0;">
@@ -306,6 +340,12 @@ async function setSonarr(field, value) {
     body: JSON.stringify({[field]: value}), credentials:'same-origin',
   });
   toast(r.ok ? `saved · ${field}` : 'save failed', r.ok ? '' : 'err');
+}
+async function restartDaemon() {
+  if (!confirm('Restart the Dubsmith daemon? Active downloads will resume on next boot.')) return;
+  toast('restarting…');
+  await fetch('/api/restart', {method:'POST', credentials:'same-origin'});
+  setTimeout(() => softReload(), 8000);
 }
 async function setConcurrency(field, value) {
   const r = await fetch('/api/settings/concurrency', {

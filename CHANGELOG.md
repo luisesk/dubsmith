@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-05-01
+
+### Added
+- **Pipeline-stage parallelism**: \`settings.concurrency.workers\` (default 1) controls how many pipeline workers run. Multiple workers do download + sync in parallel — different resource bottlenecks (network vs CPU) so they compose. \`settings.concurrency.mux\` (default 1) caps concurrent \`mkvmerge\` runs via a process-wide semaphore to keep NFS bandwidth predictable. Recommended on NFS libraries: \`workers=2-3\`, \`mux=1\`.
+- Settings page exposes both knobs with inline restart-required warning + one-click \"Restart now\" button (uses the existing \`/api/restart\` endpoint).
+
+### Architecture rationale
+- Two parallel mkvmerges on NFS each get half the bandwidth — net throughput same, but adds load contention. So mux is serialized regardless of worker count.
+- Pipeline parallelism (download + sync overlapping with another job's mux) is the actual throughput win — different resources, no contention.
+
+[0.11.1]: https://github.com/luisesk/dubsmith/compare/v0.11.0...v0.11.1
+
 ## [0.11.0] — 2026-05-01
 
 Architecture pass: eliminate Sonarr from the hot UI path, push job updates instead of polling, gzip the heavy pages.
