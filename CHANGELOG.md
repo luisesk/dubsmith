@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.11] — 2026-04-30
+
+### Build
+- **Multi-stage actually shrinks the image now.** v0.10.9's first attempt copied wheels into the runtime stage with \`COPY --from=builder /wheels\` then deleted them — but the COPY layer still shipped the wheels (subsequent \`rm\` only adds a deletion marker, doesn't remove from history). Switched to buildkit's \`RUN --mount=type=bind,from=builder\` so wheels are only mounted during install and never become a layer.
+
+[0.10.11]: https://github.com/luisesk/dubsmith/compare/v0.10.10...v0.10.11
+
 ## [0.10.10] — 2026-04-30
 
 ### Fixed

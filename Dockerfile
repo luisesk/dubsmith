@@ -46,16 +46,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg mkvtoolnix ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Pull pre-built artifacts from the builder stage.
+# Pull binaries that need to ship in the runtime image.
 COPY --from=builder /out/shaka-packager /usr/local/bin/shaka-packager
 COPY --from=builder /opt/mdnx /opt/mdnx
-COPY --from=builder /wheels /wheels
 
-# Install python deps from local wheels (no network, no pip cache layer).
-RUN pip install --no-cache-dir --no-index --find-links /wheels \
+# Install python deps from the builder's wheels via a buildkit bind mount —
+# the wheels are only present during this RUN, so they never become a layer
+# in the final image. (`COPY` followed by `rm -rf` would still leave the
+# wheels in the COPY layer; bind-mount avoids that entirely.)
+RUN --mount=type=bind,from=builder,source=/wheels,target=/wheels \
+    pip install --no-cache-dir --no-index --find-links /wheels \
         httpx numpy scipy PyYAML click fastapi 'uvicorn[standard]' \
-        APScheduler Jinja2 python-multipart itsdangerous \
-    && rm -rf /wheels
+        APScheduler Jinja2 python-multipart itsdangerous
 
 # Symlink mdnx CLI; relax permissions so any uid can use it.
 RUN find /opt/mdnx -maxdepth 2 -type f -executable -name 'aniDL' \
