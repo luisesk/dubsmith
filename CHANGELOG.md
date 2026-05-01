@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.14] — 2026-05-01
+
+### Added
+- **Proactive split-cour detection at show-add time**: \`/api/shows/quick-add\` now probes each \`cr_seasons\` entry's first absolute episode number and auto-fills \`season_offset\` when the user didn't supply one. New shows added via the wizard skip the first-run failure entirely.
+- **\`POST /api/shows/{sid}/probe-offsets\`**: re-probe an existing tracked show's seasons and update offsets. For shows added before auto-detection landed, or when CR mapping changes mid-season.
+- **Shows page** gains a top-right \"Probe offsets\" button that walks every tracked show in turn. Useful one-shot repair for libraries built up before this release.
+- New helper \`downloader.compute_season_offsets(cr_seasons, source)\`.
+
+### Tests
+- +3 cases (skip normal seasons, probe-failure tolerance, empty input). 139 total.
+
+[0.10.14]: https://github.com/luisesk/dubsmith/compare/v0.10.13...v0.10.14
+
 ## [0.10.13] — 2026-05-01
 
 ### Fixed

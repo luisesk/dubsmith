@@ -515,16 +515,51 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
     @app.post("/api/shows/quick-add", dependencies=[Depends(require_operator)])
     def quick_add(payload: dict):
         sid = int(payload["sonarr_id"])
+        cr_seasons = payload.get("cr_seasons", {}) or {}
+        season_offset = payload.get("season_offset", {}) or {}
+        source = payload.get("source", "crunchyroll")
+        # Proactive split-cour detection: if user didn't supply offsets, probe
+        # each CR season's first absolute episode number and auto-fill. Avoids
+        # the first-run failure for continuation cours (S2 starts at ep 13, etc.).
+        if cr_seasons and not season_offset:
+            try:
+                season_offset = downloader.compute_season_offsets(cr_seasons, source=source)
+                if season_offset:
+                    log.info("auto-detected season_offset for sid=%d: %s",
+                             sid, season_offset)
+            except Exception as e:
+                log.warning("season_offset auto-probe failed for sid=%d: %s", sid, e)
         return shows.upsert(
             sid,
             name=payload.get("name", str(sid)),
-            cr_seasons=payload.get("cr_seasons", {}),
-            season_offset=payload.get("season_offset", {}),
+            cr_seasons=cr_seasons,
+            season_offset=season_offset,
             target_audio=payload.get("target_audio"),
             cr_dub_lang=payload.get("cr_dub_lang"),
-            source=payload.get("source", "crunchyroll"),
+            source=source,
             enabled=True,
         )
+
+    @app.post("/api/shows/{series_id}/probe-offsets",
+              dependencies=[Depends(require_operator)])
+    def probe_offsets(series_id: int, request: Request,
+                      current: str = Depends(require_auth)):
+        """Re-probe each CR season's first absolute episode number and update
+        season_offset. Useful for shows that were added before auto-detection
+        landed, or whose CR mapping changed."""
+        sh = shows.get(series_id)
+        if not sh:
+            raise HTTPException(404, f"series {series_id} not tracked")
+        cr_seasons = sh.get("cr_seasons") or {}
+        if not cr_seasons:
+            return {"series_id": series_id, "offsets": {}, "note": "no cr_seasons"}
+        source = sh.get("source", "crunchyroll")
+        offsets = downloader.compute_season_offsets(cr_seasons, source=source)
+        shows.upsert(series_id, season_offset=offsets)
+        ip = request.client.host if request and request.client else "?"
+        audit.write(actor=current, ip=ip, action="show.probe_offsets",
+                    target=str(series_id), offsets=offsets)
+        return {"series_id": series_id, "offsets": offsets}
 
     @app.post("/api/shows/{series_id}", dependencies=[Depends(require_operator)])
     def upsert_show(series_id: int, payload: dict):

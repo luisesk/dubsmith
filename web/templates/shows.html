@@ -10,6 +10,7 @@
     <h1 class="page-title">Shows</h1>
   </div>
   <div class="page-actions">
+    <button class="btn ghost" onclick="probeAllOffsets()" title="probe each tracked show's CR seasons for split-cour offsets">Probe offsets</button>
     <button class="btn ghost" onclick="reconcileNow()" title="drop tracked shows whose Sonarr id no longer exists">Reconcile</button>
     <div class="chip-row">
       <button class="chip" id="view-table" onclick="setView('table')">Table</button>
@@ -19,6 +20,24 @@
 </div>
 
 <script>
+async function probeAllOffsets() {
+  if (!confirm('Probe each tracked show\'s CR seasons for split-cour offsets? Takes ~3s per season.')) return;
+  const shows = {{ shows|tojson }};
+  const ids = Object.keys(shows).map(s => parseInt(s, 10)).filter(n => !isNaN(n));
+  let updated = 0; let unchanged = 0; let failed = 0;
+  toast(`probing ${ids.length} show${ids.length===1?'':'s'}…`);
+  for (const sid of ids) {
+    try {
+      const r = await fetch(`/api/shows/${sid}/probe-offsets`, {method:'POST', credentials:'same-origin'});
+      if (!r.ok) { failed++; continue; }
+      const d = await r.json();
+      if (Object.keys(d.offsets || {}).length) updated++; else unchanged++;
+    } catch { failed++; }
+  }
+  toast(`offsets: ${updated} updated · ${unchanged} unchanged · ${failed} failed`);
+  if (updated) setTimeout(softReload, 1000);
+}
+
 async function reconcileNow() {
   if (!confirm('Reconcile with Sonarr — will remove tracked shows whose series id no longer exists in Sonarr and cancel their pending queue jobs.')) return;
   const r = await fetch('/api/shows/reconcile', {method:'POST', credentials:'same-origin'});

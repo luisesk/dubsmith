@@ -58,6 +58,20 @@ def probe_season_first_ep(cr_season_id: str, timeout: int = 30,
     return min(nums) if nums else None
 
 
+def compute_season_offsets(cr_seasons: dict, source: str = "crunchyroll") -> dict[str, int]:
+    """Walk a show's cr_seasons mapping and probe each for its first absolute
+    episode number. Returns {season_str: offset} for seasons whose offset is
+    nonzero (offset = first_ep - 1). Seasons starting at ep 1 are omitted
+    since they don't need an offset entry.
+    """
+    out: dict[str, int] = {}
+    for season, cr_id in (cr_seasons or {}).items():
+        first = probe_season_first_ep(cr_id, source=source)
+        if first and first > 1:
+            out[str(season)] = first - 1
+    return out
+
+
 def probe_season_dubs(cr_season_id: str, timeout: int = 60, source: str = "crunchyroll") -> list[str]:
     """Return list of available dub language codes for a season ID via mdnx --series."""
     if not security.valid_cr_id(cr_season_id):

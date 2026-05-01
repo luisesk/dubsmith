@@ -73,3 +73,29 @@ def test_picks_min_when_listing_unsorted(monkeypatch):
     monkeypatch.setattr(downloader.subprocess, "run",
                         lambda *a, **k: _fake_run(out))
     assert downloader.probe_season_first_ep("GYX0C40MZ") == 13
+
+
+def test_compute_season_offsets_skips_normal_seasons(monkeypatch):
+    """Seasons starting at ep 1 produce offset=0 → omitted from result."""
+    def fake(cr_id, **kw):
+        return {"GR9PC2J2D": 1, "GYX0C40MZ": 13, "GR75CDM58": 25}.get(cr_id)
+    monkeypatch.setattr(downloader, "probe_season_first_ep", fake)
+    out = downloader.compute_season_offsets({
+        "1": "GR9PC2J2D",
+        "2": "GYX0C40MZ",
+        "3": "GR75CDM58",
+    })
+    assert out == {"2": 12, "3": 24}
+
+
+def test_compute_season_offsets_handles_probe_failure(monkeypatch):
+    """A None probe (network/parse error) drops that season — leaves it
+    for the worker's runtime auto-recovery to handle later."""
+    monkeypatch.setattr(downloader, "probe_season_first_ep", lambda *a, **k: None)
+    out = downloader.compute_season_offsets({"1": "X", "2": "Y"})
+    assert out == {}
+
+
+def test_compute_season_offsets_empty_input():
+    assert downloader.compute_season_offsets({}) == {}
+    assert downloader.compute_season_offsets(None) == {}
