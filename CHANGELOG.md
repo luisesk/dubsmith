@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.8] — 2026-04-30
+
+### UI
+- **State pills now readable**: bumped weight to 800, slightly larger font, denser background + border tint, brighter pending color (slate-400 instead of muted-text). Poster-overlay badges (e.g. \"24 PEND\" on Library/Shows cards) get solid backgrounds + drop shadows + white text for instant readability over busy artwork.
+
+[0.10.8]: https://github.com/luisesk/dubsmith/compare/v0.10.7...v0.10.8
+
 ## [0.10.7] — 2026-04-30
 
 ### Added

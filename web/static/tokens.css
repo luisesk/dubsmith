@@ -564,14 +564,14 @@ code { font-family: var(--af-font-mono); font-size: .9em; }
 .state-pill {
   display: inline-flex; align-items: center; gap: 5px;
   padding: 3px 8px; border-radius: 999px;
-  font-family: var(--af-font-mono); font-size: 10px; font-weight: 700;
+  font-family: var(--af-font-mono); font-size: 10.5px; font-weight: 800;
   letter-spacing: 0.08em; text-transform: uppercase; line-height: 1;
   color: var(--c, var(--af-text-mute));
-  background: color-mix(in oklab, var(--c, var(--af-text-mute)) 14%, transparent);
-  border: 1px solid color-mix(in oklab, var(--c, var(--af-text-mute)) 25%, transparent);
+  background: color-mix(in oklab, var(--c, var(--af-text-mute)) 22%, transparent);
+  border: 1px solid color-mix(in oklab, var(--c, var(--af-text-mute)) 55%, transparent);
 }
 .state-done        { --c: var(--af-success); }
-.state-pending     { --c: var(--af-text-mute); }
+.state-pending     { --c: #94a3b8; }
 .state-downloading,
 .state-syncing,
 .state-muxing      { --c: var(--af-info); }
@@ -582,6 +582,26 @@ code { font-family: var(--af-font-mono); font-size: .9em; }
   content: ''; width: 6px; height: 6px; border-radius: 99px;
   background: currentColor; animation: afpulse 1.4s ease-in-out infinite;
 }
+
+/* Poster-overlay badges sit on top of busy artwork — need solid bg + shadow
+   so they read at a glance regardless of poster colors. */
+.show-poster .badge .state-pill,
+.show-poster .badge.state-pill {
+  background: var(--c, #4b5563);
+  color: #fff;
+  border-color: rgba(0, 0, 0, 0.45);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  padding: 4px 10px;
+  font-size: 10.5px;
+}
+.show-poster .badge .state-pending { --c: #475569; }   /* readable slate gray */
+.show-poster .badge .state-done    { --c: #16a34a; }
+.show-poster .badge .state-failed  { --c: #dc2626; }
+.show-poster .badge .state-quarantined { --c: #d97706; }
+.show-poster .badge .state-downloading,
+.show-poster .badge .state-syncing,
+.show-poster .badge .state-muxing { --c: #2563eb; }
 
 /* Lang tag */
 .lang-tag {
