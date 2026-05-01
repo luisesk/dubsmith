@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.16] — 2026-05-01
+
+### Performance / reliability
+- **Sonarr httpx client**: tight per-phase timeouts (connect 5s, read 10s, write 10s, pool 2s) replace the single 30s blanket. Recycle keepalive connections after 30s idle to dodge stale-connection hangs (these were causing \"sonarr 20: read operation timed out\" errors despite Sonarr itself responding in 100ms).
+- **Sonarr cache TTLs bumped**: default 60s → 300s; \`all_series\` 120s → 600s. Sonarr metadata changes rarely, and we already invalidate on \`rescan_series\`. Cuts most page renders to zero Sonarr calls.
+- **Poster/fanart cache to disk** at \`/data/cache/images/{sid}-{kind}.jpg\`. Was re-fetching from Sonarr every page load. Now served via \`FileResponse\` once cached. Eliminates Sonarr round-trips on the hot UI path.
+
+[0.10.16]: https://github.com/luisesk/dubsmith/compare/v0.10.15...v0.10.16
+
 ## [0.10.15] — 2026-05-01
 
 ### Performance

@@ -656,8 +656,19 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
             },
         )
 
+    # On-disk image cache: fetched posters/fanart live in /data/cache/images.
+    # Subsequent requests serve from disk — zero Sonarr round-trips, zero httpx
+    # connection-pool risk under load.
+    _IMG_CACHE_DIR = config.data_dir() / "cache" / "images"
+    _IMG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
     def _proxy_image(series_id: int, cover_type: str):
         import httpx
+        from fastapi.responses import FileResponse, Response
+        cache_path = _IMG_CACHE_DIR / f"{series_id}-{cover_type}.jpg"
+        if cache_path.exists():
+            return FileResponse(cache_path, media_type="image/jpeg",
+                                headers={"Cache-Control": "public, max-age=86400"})
         sonarr = _sonarr()
         sonarr_url, sonarr_key = _sonarr_creds(cfg, settings)
         try:
@@ -669,14 +680,21 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
                         r = httpx.get(
                             sonarr_url.rstrip("/") + url,
                             headers={"X-Api-Key": sonarr_key},
-                            timeout=10, follow_redirects=True,
+                            timeout=httpx.Timeout(connect=5.0, read=10.0,
+                                                   write=10.0, pool=2.0),
+                            follow_redirects=True,
                         )
                     elif url:
-                        r = httpx.get(url, timeout=10, follow_redirects=True)
+                        r = httpx.get(url, timeout=httpx.Timeout(connect=5.0,
+                                       read=10.0, write=10.0, pool=2.0),
+                                       follow_redirects=True)
                     else:
                         continue
                     if r.status_code == 200:
-                        from fastapi.responses import Response
+                        try:
+                            cache_path.write_bytes(r.content)
+                        except OSError as e:
+                            log.warning("image cache write failed: %s", e)
                         return Response(content=r.content, media_type="image/jpeg",
                                         headers={"Cache-Control": "public, max-age=86400"})
         except Exception as e:

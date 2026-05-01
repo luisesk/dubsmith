@@ -8,7 +8,8 @@ import httpx
 # Key: (base_url, method, args). Avoids re-hitting Sonarr per page render.
 _CACHE: dict = {}
 _CACHE_LOCK = Lock()
-_DEFAULT_TTL = 60.0
+_DEFAULT_TTL = 300.0  # 5 min — Sonarr data changes rarely; we get
+                       # invalidations on rescan_series anyway.
 
 
 def _cache_get(key):
@@ -37,10 +38,16 @@ def cache_invalidate(prefix: str | None = None):
 class Sonarr:
     def __init__(self, url: str, api_key: str):
         self.base_url = url.rstrip("/")
+        # Tight timeouts so a stale connection or slow remote fails fast.
+        # connect=5s, read=10s, write=10s, pool=2s. Long-lived keepalive
+        # connections are recycled if idle > 30s to dodge stale-conn hangs.
         self.client = httpx.Client(
             base_url=self.base_url,
             headers={"X-Api-Key": api_key},
-            timeout=30,
+            timeout=httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=2.0),
+            limits=httpx.Limits(max_keepalive_connections=4,
+                                max_connections=8,
+                                keepalive_expiry=30.0),
         )
 
     def series(self, series_id: int) -> dict:
@@ -106,7 +113,8 @@ class Sonarr:
         r = self.client.get("/api/v3/series")
         r.raise_for_status()
         v = r.json()
-        _cache_put(key, v, ttl=120.0)
+        # Full library — biggest payload, hottest cache. 10 min.
+        _cache_put(key, v, ttl=600.0)
         return v
 
     def poster_url(self, series_id: int) -> str | None:
