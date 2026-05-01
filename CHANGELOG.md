@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.10] — 2026-04-30
+
+### Fixed
+- **mkvmerge exit 1 was wrongly treated as failure**, killing valid mux jobs that just had non-fatal warnings (\"Track has unusual codec parameters\" etc.). Per mkvmerge docs: \`0\`=success, \`1\`=success-with-warnings (file IS produced), \`2\`=real error. We now only fail on \`>= 2\`. Warning lines are logged. Mashle: Magic and Muscles S01E01/E03 (and similar SDTV-source jobs) failed for this reason in v0.10.4-0.10.9; retrying them now succeeds.
+
+### Tests
+- +4 cases (exit 0 silent, exit 1 warnings logged, exit 1 no-warnings proceeds, exit 2 raises). 130 total.
+
+[0.10.10]: https://github.com/luisesk/dubsmith/compare/v0.10.9...v0.10.10
+
 ## [0.10.9] — 2026-04-30
 
 ### Build

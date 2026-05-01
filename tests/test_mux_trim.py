@@ -113,6 +113,45 @@ def test_run_or_raise_surfaces_stderr():
     assert "BAD_REASON" in msg
 
 
+def test_run_mkvmerge_exit_0_passes():
+    """Exit 0 — silent success."""
+    r = mux._run_mkvmerge(["sh", "-c", "echo 'Multiplexing took 1 second.'; exit 0"])
+    assert r.returncode == 0
+
+
+def test_run_mkvmerge_exit_1_is_warning_not_fatal(caplog):
+    """Exit 1 — file IS produced; we log warnings and continue."""
+    import logging
+    caplog.set_level(logging.WARNING, logger="src.mux")
+    r = mux._run_mkvmerge([
+        "sh", "-c",
+        "echo 'Warning: Some non-fatal issue'; "
+        "echo 'Multiplexing took 4 seconds.'; "
+        "exit 1",
+    ])
+    assert r.returncode == 1
+    # warning message captured into log
+    assert any("non-fatal" in rec.getMessage().lower() for rec in caplog.records)
+
+
+def test_run_mkvmerge_exit_2_raises():
+    """Exit 2 — actual error; must raise."""
+    import pytest
+    with pytest.raises(RuntimeError) as ei:
+        mux._run_mkvmerge([
+            "sh", "-c",
+            "echo 'Error: Cannot read source file'; exit 2",
+        ])
+    assert "exit 2" in str(ei.value)
+    assert "Cannot read source file" in str(ei.value)
+
+
+def test_run_mkvmerge_exit_1_no_warning_lines_still_proceeds(caplog):
+    """Exit 1 with no Warning: lines is unusual but we must not raise."""
+    r = mux._run_mkvmerge(["sh", "-c", "echo 'Multiplexing took 1 second.'; exit 1"])
+    assert r.returncode == 1
+
+
 def test_trim_audio_rejects_positive_delay():
     with pytest.raises(ValueError):
         mux._trim_audio("/in", "/out", 100)

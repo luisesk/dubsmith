@@ -75,6 +75,28 @@ def _run_or_raise(cmd: list[str], label: str) -> subprocess.CompletedProcess:
     return r
 
 
+def _run_mkvmerge(cmd: list[str]) -> subprocess.CompletedProcess:
+    """mkvmerge has 3-level exit codes: 0=ok, 1=ok-with-warnings (file IS
+    produced), 2=error (no file). Don't treat 1 as fatal — log warnings and
+    continue."""
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    out_text = (r.stdout or "") + "\n" + (r.stderr or "")
+    if r.returncode >= 2:
+        err_lines = [ln for ln in out_text.splitlines() if ln.lower().startswith("error:")]
+        if not err_lines:
+            err_lines = [ln for ln in out_text.splitlines() if ln.strip()][-3:]
+        msg = err_lines[-1] if err_lines else "(no output)"
+        raise RuntimeError(f"mkvmerge exit {r.returncode}: {msg[:320]}")
+    if r.returncode == 1:
+        warnings = [ln for ln in out_text.splitlines() if ln.lower().startswith("warning:")]
+        for w in warnings[:5]:
+            log.warning("mkvmerge: %s", w[:240])
+        if not warnings:
+            log.warning("mkvmerge exit 1 with no Warning: lines (proceeding); output tail: %s",
+                        out_text.splitlines()[-2:] if out_text else "")
+    return r
+
+
 def _audio_codec(path: str) -> str:
     """Return codec_name of the first audio stream (lower-case), or '' on failure."""
     try:
@@ -255,7 +277,7 @@ def inject(target: str, source: str, delay_ms: int,
         ]
         log.info("mkvmerge%s: %s", " (local-staged)" if work_local else "", " ".join(cmd))
         t_mux = time.time()
-        _run_or_raise(cmd, label="mkvmerge")
+        _run_mkvmerge(cmd)
         log.info("mkvmerge: %.1fs", time.time() - t_mux)
 
         orig_size = target_p.stat().st_size
