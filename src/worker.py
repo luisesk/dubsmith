@@ -233,7 +233,7 @@ class Worker:
         if nt.get("url") and nt.get("topic"):
             notify.ntfy(
                 nt["url"], nt["topic"],
-                f"{show.get('name','?')} S{job.season:02d}E{job.episode:02d} dub injected (delay {result.delay_ms}ms)",
+                f"{show.get('name','?')} S{job.season:02d}E{job.episode:02d} dub injected (delay {result_delay}ms)",
                 title="plex-dub",
                 token=nt.get("token"),
             )

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] — 2026-05-01
+
+### Fixed
+- **Worker crashed with \`UnboundLocalError: cannot access local variable 'result'\`** on the manual-delay path. The post-mux ntfy notification still referenced \`result.delay_ms\` which doesn't exist when sync detection was skipped. Replaced with \`result_delay\` (set in both branches).
+
+[0.11.2]: https://github.com/luisesk/dubsmith/compare/v0.11.1...v0.11.2
+
 ## [0.11.1] — 2026-05-01
 
 ### Added
