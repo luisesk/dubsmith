@@ -1,0 +1,86 @@
+name: mdnx-autoupdate
+
+# Diariamente: checa nova release do multi-downloader-nx (mdnx). Se houver,
+# bumpa MDNX_VERSION no Dockerfile, commita, e builda+push a imagem dubsmith.
+# Self-contained: builda a imagem no proprio job porque um commit feito com o
+# GITHUB_TOKEN NAO dispara o workflow docker.yml (protecao anti-recursao do GH).
+# Watchtower no LXC 110 puxa a :latest nova e recria o container.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # diario 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write         # commitar o bump do Dockerfile
+  packages: write         # push da imagem pro ghcr
+
+concurrency:
+  group: mdnx-autoupdate
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  check-bump-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolver mdnx atual (Dockerfile) vs ultima (upstream)
+        id: ver
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh api repos/anidl/multi-downloader-nx/releases/latest --jq .tag_name)
+          current=$(grep -oP 'MDNX_VERSION=\K\S+' Dockerfile | head -1)
+          echo "current=$current latest=$latest"
+          echo "latest=$latest"   >> "$GITHUB_OUTPUT"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          if [ "$latest" != "$current" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump MDNX_VERSION no Dockerfile + commit
+        if: steps.ver.outputs.changed == 'true'
+        run: |
+          sed -i "s|MDNX_VERSION=${{ steps.ver.outputs.current }}|MDNX_VERSION=${{ steps.ver.outputs.latest }}|" Dockerfile
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Dockerfile
+          git commit -m "chore(mdnx): bump ${{ steps.ver.outputs.current }} -> ${{ steps.ver.outputs.latest }}"
+          git push
+
+      - uses: docker/setup-qemu-action@v3
+        if: steps.ver.outputs.changed == 'true'
+      - uses: docker/setup-buildx-action@v3
+        if: steps.ver.outputs.changed == 'true'
+
+      - name: Login ghcr
+        if: steps.ver.outputs.changed == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push imagem (latest + tag da versao mdnx)
+        if: steps.ver.outputs.changed == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:mdnx-${{ steps.ver.outputs.latest }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Nada a fazer
+        if: steps.ver.outputs.changed == 'false'
+        run: echo "mdnx ja em ${{ steps.ver.outputs.current }} — sem update."
