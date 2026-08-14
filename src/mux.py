@@ -20,6 +20,7 @@ local disk, avoiding NFS small-write latency during the merge. The final
 result is then copied to the target's NFS dir via a tempfile + os.replace
 for atomic swap. Trades local-disk space for mux speed.
 """
+import json
 import logging
 import os
 import shutil
@@ -121,6 +122,25 @@ def _audio_codec(path: str) -> str:
     except Exception as e:
         log.warning("audio codec probe failed for %s: %s", path, e)
     return ""
+
+
+def _audio_track_id(path: str) -> int:
+    """Id mkvmerge do primeiro track de audio de `path` (0 se nao der para ler).
+
+    mkvmerge numera os tracks por arquivo de ENTRADA, e opcoes como --sync,
+    --language e --track-name sao escritas como `<id>:<valor>`. O mkv do mdnx
+    traz video no 0 e audio no 1, entao qualquer opcao fixada em 0 cai no track
+    errado. Os ids saem do proprio mkvmerge (-J) e nao do ffprobe: os dois
+    numeram diferente quando ha capitulos ou anexos no arquivo.
+    """
+    try:
+        r = subprocess.run(["mkvmerge", "-J", path], capture_output=True, text=True, timeout=60)
+        for t in json.loads(r.stdout or "{}").get("tracks", []):
+            if t.get("type") == "audio":
+                return int(t["id"])
+    except Exception as e:
+        log.warning("mkvmerge -J failed for %s (%s); assuming audio track id 0", path, e)
+    return 0
 
 
 def _trim_audio_copy(src: str, out: str, delay_ms: int) -> None:
@@ -373,20 +393,28 @@ def inject(target: str, source: str, delay_ms: int,
         if delay_ms >= 0:
             # Lossless path: container --sync metadata applied to next input.
             audio_in = source
-            sync_arg = ["--sync", f"0:{delay_ms}"]
+            aplicar_sync = True
             trim_mode = "metadata-sync"
         else:
             t_trim = time.time()
             audio_in = os.path.join(td, "trimmed.mkv")
             trim_mode = _trim_audio(source, audio_in, delay_ms)
             log.info("trim: %s in %.1fs", trim_mode, time.time() - t_trim)
-            sync_arg = []
+            aplicar_sync = False
 
+        # Track-scoped options precisam do id DAQUELE arquivo de entrada. O mkv
+        # que o mdnx entrega tem video no id 0 e audio no 1, entao fixar 0 aqui
+        # mandava language/track-name/default-flag (e o --sync do caminho de
+        # delay positivo) para o track de video, que --no-video descarta logo
+        # depois: o delay ia embora em silencio e o track ficava com o nome que
+        # veio da Crunchyroll.
+        aid = _audio_track_id(audio_in)
+        sync_arg = ["--sync", f"{aid}:{delay_ms}"] if aplicar_sync else []
         cmd += sync_arg + [
             "--no-video", "--no-attachments", "--no-chapters", "--no-buttons", "--no-track-tags",
-            "--language", f"0:{lang}",
-            "--track-name", f"0:{track_name}",
-            "--default-track-flag", "0:0",
+            "--language", f"{aid}:{lang}",
+            "--track-name", f"{aid}:{track_name}",
+            "--default-track-flag", f"{aid}:0",
             audio_in,
         ]
         log.info("mkvmerge%s: %s", " (local-staged)" if work_local else "", " ".join(cmd))
