@@ -20,6 +20,49 @@ _DUB_CACHE_TTL_S = 30 * 24 * 3600
 _DUB_CACHE_SWEEP_DONE = False
 
 
+def resolve_cr_season(entry, cr_ep: int, source: str = "crunchyroll",
+                      on_normalize=None) -> str | None:
+    """Resolve o id de season da CR para um episodio absoluto.
+
+    `entry` (valor de cr_seasons[season]) aceita duas formas:
+
+      '1': G675DKPNR                      # cour unico, comportamento antigo
+      '1': [{id: G675DKPNR, first_ep: 1},
+            {id: GS00363282JAJP, first_ep: 52}, ...]
+
+    A forma em lista cobre serie que o Sonarr numera como uma temporada
+    absoluta e a Crunchyroll parte em varias seasons (Black Clover, One Piece).
+    Sem ela, todo episodio fora da primeira parte volta com "Episodes not
+    selected!" do mdnx. Entrada em lista pode vir como id cru; nesse caso o
+    first_ep e sondado uma vez e devolvido via `on_normalize` para gravar no
+    shows.yml, de modo que a ida ao aniDL nao se repita.
+    """
+    if not entry:
+        return None
+    if isinstance(entry, str):
+        return entry
+
+    partes = []
+    mudou = False
+    for p in entry:
+        if isinstance(p, dict):
+            partes.append({"id": p["id"], "first_ep": int(p.get("first_ep") or 1)})
+            continue
+        first = downloader.probe_season_first_ep(str(p), source=source)
+        partes.append({"id": str(p), "first_ep": int(first or 1)})
+        mudou = True
+    partes.sort(key=lambda p: p["first_ep"])
+    if mudou and on_normalize:
+        on_normalize(partes)
+
+    escolhida = None
+    for p in partes:
+        if p["first_ep"] <= cr_ep:
+            escolhida = p
+    # Episodio abaixo do primeiro cour (numeracao estranha): fica com a parte 1.
+    return (escolhida or partes[0])["id"] if partes else None
+
+
 def _dub_cache_dir(cfg: dict) -> Path:
     """Pristine extracted dub audio kept here LAZILY — only on jobs that ran
     with manual_delay_ms set (signal that operator is iterating sync). Untouched
@@ -143,7 +186,9 @@ class Worker:
                 return n, idx
         return None, None
 
-    def process(self, job: Job) -> None:
+    def process(self, job: Job) -> str | None:
+        """Roda o job. Devolve "deferred" quando o teto de taxa adiou o
+        download (o daemon dorme nesse caso), None em qualquer outro desfecho."""
         cfg = self.cfg
         bus = events.get_bus()
 
@@ -217,11 +262,23 @@ class Worker:
 
         cr_seasons = show.get("cr_seasons", {})
         season_offset = show.get("season_offset", {})
-        cr_season_id = cr_seasons.get(str(job.season))
+        season_entry = cr_seasons.get(str(job.season))
+        cr_ep = job.episode + season_offset.get(str(job.season), 0)
+        multi_cour = isinstance(season_entry, list)
+
+        def _persist_partes(partes):
+            novo = dict(cr_seasons)
+            novo[str(job.season)] = partes
+            self.shows.upsert(job.series_id, cr_seasons=novo)
+
+        cr_season_id = resolve_cr_season(
+            season_entry, cr_ep,
+            source=show.get("source", "crunchyroll"),
+            on_normalize=_persist_partes,
+        )
         if not cr_season_id:
             self.queue.set_state(job.id, "failed", last_error=f"no cr_seasons mapping for S{job.season}")
             return
-        cr_ep = job.episode + season_offset.get(str(job.season), 0)
 
         # Pre-flight: target file must exist inside the container before we burn
         # bandwidth on a 1+ GB mdnx download. Catches path-remap misconfigs
@@ -276,7 +333,9 @@ class Worker:
                                  attempts=max(0, (job.attempts or 1) - 1),
                                  last_error=f"adiado: {e}")
             _clean()
-            return
+            # "deferred" avisa o daemon para dormir ate a proxima vaga. Devolver
+            # None faria ele reclamar este mesmo job no ciclo seguinte.
+            return "deferred"
         except Exception as e:
             err = str(e)
             # Auto-recovery: when mdnx returns "Episodes not selected!" for a season
@@ -284,7 +343,9 @@ class Worker:
             # episode number, save the inferred offset to shows.yml, and retry.
             # Crunchyroll continuation cours start at non-1 absolute numbers
             # (S02 starts at 13, etc.) and need this offset.
-            if "Episodes not selected" in err:
+            # Mapeamento multi-cour ja usa numeracao absoluta: inferir offset
+            # ali deslocaria o episodio de novo e quebraria as partes que funcionam.
+            if "Episodes not selected" in err and not multi_cour:
                 season_offset_cur = season_offset.get(str(job.season), 0)
                 if season_offset_cur == 0:
                     first = downloader.probe_season_first_ep(cr_season_id, source=self.dl.source)

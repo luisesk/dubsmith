@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.3] (2026-08-14)
+
+### Fixed
+- **Shows split across several Crunchyroll seasons stalled past the first cour.** Sonarr numbers a show like Black Clover as one absolute season (S01E1-170) while Crunchyroll splits it into four season ids, so every episode past 51 came back from mdnx as `Episodes not selected!`. `cr_seasons` now accepts a list of parts per Sonarr season (`[{id, first_ep}, ...]`) and resolves the right part per episode; a bare id in the list is probed once and normalized back into `shows.yml`. The plain-string mapping still works unchanged. `season_offset` auto-detection is skipped for multi-cour shows, which already use absolute numbering.
+- **Rate-cap deferral spun the worker loop.** A job declined by the download rate cap went back to `pending` and was re-claimed on the next iteration with no delay, looping several times per second until the next slot opened. One deployment grew its container log to 733 MB that way. `Worker.process` now returns `"deferred"` and the daemon sleeps until the next slot.
+- **A dub that shipped with the file was destroyed on mux.** `mkvmerge` stripped every track in the target language before injecting. It now strips only the track dubsmith itself injected (matched on `track_name`), so a pre-existing dub survives as a fallback and keeps its default flag while the new track goes in non-default. An empty keep-list now passes `--no-audio`; previously the flag was dropped and mkvmerge copied the old track back, duplicating the dub on every resync.
+
+### Changed
+- Download rate cap raised from 4/h to 10/h, and spacing from a fixed 60s to 300s plus up to 120s of jitter. 4/h could not drain a backlog (656 queued jobs was over a week of work), and irregular spacing reads less like a scraper than a fixed cadence. Tunable via `DUBSMITH_MAX_DOWNLOADS_POR_HORA`, `DUBSMITH_INTERVALO_MINIMO_S`, `DUBSMITH_JITTER_MAX_S`.
+- The example compose caps the container log at 50m x 3. Docker's json-file driver is uncapped by default.
+
+[0.11.3]: https://github.com/luisesk/dubsmith/compare/v0.11.2...v0.11.3
+
 ## [0.11.2] — 2026-05-01
 
 ### Fixed

@@ -288,16 +288,32 @@ def inject(target: str, source: str, delay_ms: int,
         new_name = f"{stem} {suffix}.mkv"
     final = target_dir / new_name
 
-    # Drop existing tracks matching the target lang (resync case)
+    # Drop only OUR previous injection of the target lang (resync case). Um dub
+    # que ja estava no arquivo (rip de BD, dub oficial que veio com o release)
+    # nao e nosso e fica: se o track novo sair dessincronizado, o original ainda
+    # esta la e continua sendo o default. So o track que carrega exatamente o
+    # nosso track_name e considerado nosso, entao resync sucessivo nao empilha.
     keep_audio_indices: list[int] | None = None
     audios = [s for s in probe.streams(target) if s.get("codec_type") == "audio"]
-    if any(lang_matches(s.get("tags", {}).get("language", ""), lang) for s in audios):
-        keep_audio_indices = [
-            int(s["index"])
-            for s in audios
-            if not lang_matches(s.get("tags", {}).get("language", ""), lang)
+
+    def _nosso(s: dict) -> bool:
+        if not lang_matches(s.get("tags", {}).get("language", ""), lang):
+            return False
+        titulo = (s.get("tags", {}).get("title") or "").strip().casefold()
+        return titulo == track_name.strip().casefold()
+
+    if any(_nosso(s) for s in audios):
+        keep_audio_indices = [int(s["index"]) for s in audios if not _nosso(s)]
+        log.info("stripping previously injected %s audio (%r); keeping audio tracks %s",
+                 lang, track_name, keep_audio_indices)
+    else:
+        preexistente = [
+            int(s["index"]) for s in audios
+            if lang_matches(s.get("tags", {}).get("language", ""), lang)
         ]
-        log.info("stripping existing %s audio; keeping audio tracks %s", lang, keep_audio_indices)
+        if preexistente:
+            log.info("keeping pre-existing %s audio %s as fallback; new track goes in "
+                     "as non-default", lang, preexistente)
 
     # Sweep any orphan tempfiles from prior interrupted copy-backs in target dir.
     _sweep_orphan_tempfiles(target_dir)
@@ -330,6 +346,11 @@ def inject(target: str, source: str, delay_ms: int,
         cmd = ["mkvmerge", "-o", out_tmp]
         if keep_audio_indices:
             cmd += ["--audio-tracks", ",".join(str(i) for i in keep_audio_indices)]
+        elif keep_audio_indices == []:
+            # Lista vazia = todo audio do arquivo era injecao nossa. Sem esse
+            # ramo o flag sumiria e o mkvmerge copiaria o track velho de volta,
+            # duplicando o dub a cada resync.
+            cmd += ["--no-audio"]
         cmd += [target]
 
         trim_mode = "n/a"

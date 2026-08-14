@@ -6,7 +6,7 @@ import time
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import config, health, logbuf, mux, reconcile, scanner, sonarr_cache as _sc, staging, upgrade_watcher
+from . import config, downloader, health, logbuf, mux, reconcile, scanner, sonarr_cache as _sc, staging, upgrade_watcher
 from .api import make_app
 from .prowlarr import Prowlarr
 from .queue import Queue
@@ -64,7 +64,13 @@ def _worker_loop(name: str, cfg: dict, queue: Queue, shows: ShowsStore, settings
             continue
         log.info("[%s] picked job %d", name, job.id)
         try:
-            worker.process(job)
+            if worker.process(job) == "deferred":
+                # Job voltou para pending pelo teto de taxa e continua elegivel.
+                # Sem dormir, claim_next devolve ele no ciclo seguinte e o loop
+                # gira dezenas de vezes por segundo ate a vaga abrir.
+                espera = min(max(downloader.espera_ate_proxima_vaga(), 5), 300)
+                log.info("[%s] teto de taxa atingido; dormindo %ds", name, espera)
+                stop.wait(timeout=espera)
         except Exception as e:
             log.exception("[%s] crashed on job %s: %s", name, job.id, e)
             queue.set_state(job.id, "failed", last_error=f"worker exception: {e}")

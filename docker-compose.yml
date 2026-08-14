@@ -26,6 +26,13 @@ services:
       - "8080:8080"
     command: ["daemon"]
     restart: unless-stopped
+    # Docker's json-file driver has no default cap: a chatty worker can grow the
+    # log until it fills the host disk. 50m x 3 keeps it bounded at 150 MB.
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"]
       interval: 30s

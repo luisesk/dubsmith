@@ -6,6 +6,7 @@ mapping to mdnx's `--service` flag lives in SERVICE_MAP.
 """
 import logging
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -29,15 +30,24 @@ _MDNX_BOOT_LOCK = threading.Lock()
 #
 # Dimensionado a partir do volume medido no Sonarr em 2026-08-12: as series
 # catalogadas no dubsmith importam 7,5 episodios/dia em media, com pico de 29.
-# 4/h da 96/dia, folga confortavel sobre o pico sem parecer varredura.
+#
+# 2026-08-14: subiu de 4/h para 10/h porque 4/h nao drena backlog (656 jobs
+# parados = mais de uma semana). O que protege a conta nao e o numero por hora,
+# e o espacamento: 5 min entre downloads, com jitter, da 10/h no papel mas um
+# padrao irregular parecido com uso humano. Sequencial, uma sessao mdnx por vez,
+# ~240/dia de teto. Cadencia relogio (60s cravados) e o que denuncia varredura.
 #
 # Vale so para download de video/audio. As chamadas de metadado (probe_*,
 # search_show) ficam de fora: sao baratas e nao puxam midia.
-MAX_DOWNLOADS_POR_HORA = int(os.environ.get("DUBSMITH_MAX_DOWNLOADS_POR_HORA", "4"))
-INTERVALO_MINIMO_S = int(os.environ.get("DUBSMITH_INTERVALO_MINIMO_S", "60"))
+MAX_DOWNLOADS_POR_HORA = int(os.environ.get("DUBSMITH_MAX_DOWNLOADS_POR_HORA", "10"))
+INTERVALO_MINIMO_S = int(os.environ.get("DUBSMITH_INTERVALO_MINIMO_S", "300"))
+# Somado ao intervalo minimo, sorteado por download. Quebra a cadencia fixa.
+JITTER_MAX_S = int(os.environ.get("DUBSMITH_JITTER_MAX_S", "120"))
 
 _TETO_LOCK = threading.Lock()
 _LANCAMENTOS: list[float] = []
+# Instante em que o proximo download fica liberado (ultimo + intervalo + jitter).
+_PROXIMO_LIBERADO = [0.0]
 
 
 class TetoDeTaxaExcedido(RuntimeError):
@@ -59,12 +69,31 @@ def _checar_teto() -> None:
             raise TetoDeTaxaExcedido(
                 f"teto de {MAX_DOWNLOADS_POR_HORA} downloads/h atingido; "
                 f"proxima vaga em ~{espera}s")
-        if _LANCAMENTOS and agora - _LANCAMENTOS[-1] < INTERVALO_MINIMO_S:
-            falta = int(INTERVALO_MINIMO_S - (agora - _LANCAMENTOS[-1]))
+        if agora < _PROXIMO_LIBERADO[0]:
+            falta = int(_PROXIMO_LIBERADO[0] - agora)
             raise TetoDeTaxaExcedido(
-                f"intervalo minimo de {INTERVALO_MINIMO_S}s entre downloads; "
+                f"espacamento entre downloads (~{INTERVALO_MINIMO_S}s + jitter); "
                 f"faltam {falta}s")
         _LANCAMENTOS.append(agora)
+        _PROXIMO_LIBERADO[0] = agora + INTERVALO_MINIMO_S + random.uniform(0, JITTER_MAX_S)
+
+
+def espera_ate_proxima_vaga() -> int:
+    """Segundos ate um download caber no teto de novo (0 se ja cabe).
+
+    O daemon dorme por esse tempo depois de um job adiado. Sem isso ele
+    reclama o mesmo job no instante seguinte e gira em busy-loop ate a vaga
+    abrir, queimando CPU e inundando o log em disco.
+    """
+    agora = time.time()
+    with _TETO_LOCK:
+        recentes = [t for t in _LANCAMENTOS if agora - t < 3600]
+        esperas = [0]
+        if len(recentes) >= MAX_DOWNLOADS_POR_HORA:
+            esperas.append(int(3600 - (agora - recentes[0])) + 1)
+        if agora < _PROXIMO_LIBERADO[0]:
+            esperas.append(int(_PROXIMO_LIBERADO[0] - agora) + 1)
+        return max(esperas)
 
 
 def teto_status() -> dict:
