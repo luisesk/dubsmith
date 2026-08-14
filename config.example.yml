@@ -33,6 +33,11 @@ paths_extra:
 target_language:
   audio: por                      # ISO-639-2 code muxed into mkv (por, eng, spa, fra, deu, ita)
   audio_label: "Portuguese Brazil"
+  # Labels this install used for audio_label in the past. A track carrying one
+  # of them is treated as a dubsmith injection and gets replaced on remux
+  # instead of piling up. Leave empty unless you changed audio_label: any track
+  # NOT matching is treated as a dub that shipped with the file and is kept.
+  audio_label_aliases: []
   cr_dub_lang: por                # mdnx --dubLang value
   cr_sub_lang: por                # mdnx --dlsubs value
 

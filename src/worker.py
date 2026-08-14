@@ -229,6 +229,7 @@ class Worker:
                         job.target_path, str(cached), job.manual_delay_ms,
                         lang=audio_lang, track_name=audio_label,
                         mux_workdir=mux_workdir,
+                        label_aliases=cfg["target_language"].get("audio_label_aliases"),
                     )
                     # Refresh mtime so TTL clock resets on each iteration
                     try:
@@ -439,6 +440,7 @@ class Worker:
                 job.target_path, str(src_path), result_delay,
                 lang=audio_lang, track_name=audio_label,
                 mux_workdir=mux_workdir,
+                label_aliases=cfg["target_language"].get("audio_label_aliases"),
             )
         except Exception as e:
             self.queue.set_state(job.id, "failed", last_error=f"mux: {e}")

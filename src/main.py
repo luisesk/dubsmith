@@ -99,6 +99,7 @@ def process_series(cfg: dict, series_id: int, dry_run: bool = False) -> int:
                 m.target_path, str(src_path), result.delay_ms,
                 lang=cfg["target_language"]["audio"],
                 track_name=cfg["target_language"]["audio_label"],
+                label_aliases=cfg["target_language"].get("audio_label_aliases"),
             )
             # cleanup staging file to free disk
             try:

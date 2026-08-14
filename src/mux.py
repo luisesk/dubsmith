@@ -183,7 +183,8 @@ def _trim_audio(src: str, out: str, delay_ms: int) -> str:
 
 def remux_with_new_delay(target_path: str, lang: str, new_delay_ms: int,
                           track_name: str = "Portuguese Brazil",
-                          mux_workdir: str | None = None) -> str:
+                          mux_workdir: str | None = None,
+                          label_aliases: list[str] | None = None) -> str:
     """Re-apply sync delay to an already-muxed dub track without re-downloading.
 
     Extracts the existing dub track from the target via codec-copy, then runs
@@ -205,14 +206,19 @@ def remux_with_new_delay(target_path: str, lang: str, new_delay_ms: int,
 
     streams = [s for s in probe.streams(target_path, no_cache=True)
                if s.get("codec_type") == "audio"]
-    dub_track = None
-    for s in streams:
-        s_lang = (s.get("tags", {}).get("language") or "").lower()
-        if lang_matches(s_lang, lang):
-            dub_track = int(s["index"])
-            break
-    if dub_track is None:
+    # Com um dub original preservado no arquivo, o primeiro track no idioma
+    # alvo pode ser o dele, nao o nosso. Recalibrar delay tem que pegar o track
+    # que injetamos, entao casa pelo rotulo antes de cair no primeiro do idioma.
+    rotulos = {track_name.strip().casefold()}
+    rotulos |= {a.strip().casefold() for a in (label_aliases or []) if a.strip()}
+    candidatos = [s for s in streams
+                  if lang_matches((s.get("tags", {}).get("language") or "").lower(), lang)]
+    nossos = [s for s in candidatos
+              if (s.get("tags", {}).get("title") or "").strip().casefold() in rotulos]
+    escolhido = (nossos or candidatos)
+    if not escolhido:
         raise RuntimeError(f"remux: no audio track matching lang={lang} in target")
+    dub_track = int(escolhido[0]["index"])
 
     work_parent = target_dir
     if mux_workdir:
@@ -235,7 +241,8 @@ def remux_with_new_delay(target_path: str, lang: str, new_delay_ms: int,
         log.info("remux extract dub (tid=%d): %.1fs", dub_track, time.time() - t_extract)
         log.info("remux: target=%dms (delegating to inject for trim+mux)", new_delay_ms)
         return inject(target_path, extracted, new_delay_ms,
-                      lang=lang, track_name=track_name, mux_workdir=mux_workdir)
+                      lang=lang, track_name=track_name, mux_workdir=mux_workdir,
+                      label_aliases=label_aliases)
 
 
 def _stat_same_fs(a: Path, b: Path) -> bool:
@@ -268,7 +275,8 @@ def _sweep_orphan_tempfiles(target_dir: Path) -> int:
 
 def inject(target: str, source: str, delay_ms: int,
            lang: str = "por", track_name: str = "Portuguese Brazil",
-           mux_workdir: str | None = None) -> str:
+           mux_workdir: str | None = None,
+           label_aliases: list[str] | None = None) -> str:
     """Mux source audio into target. Strips any pre-existing track of the same lang
     (resync case). Returns path to final file (may be renamed with a lang suffix).
 
@@ -291,16 +299,24 @@ def inject(target: str, source: str, delay_ms: int,
     # Drop only OUR previous injection of the target lang (resync case). Um dub
     # que ja estava no arquivo (rip de BD, dub oficial que veio com o release)
     # nao e nosso e fica: se o track novo sair dessincronizado, o original ainda
-    # esta la e continua sendo o default. So o track que carrega exatamente o
-    # nosso track_name e considerado nosso, entao resync sucessivo nao empilha.
+    # esta la e continua sendo o default. So o track que carrega o nosso
+    # track_name e considerado nosso, entao resync sucessivo nao empilha.
+    #
+    # `label_aliases` existe porque o track_name mudou ao longo do tempo: uma
+    # injecao antiga rotulada "Portuguese" nao seria reconhecida por um deploy
+    # que hoje escreve "Portuguese Brazil", e o remux empilharia as duas.
+    # Lista os rotulos que ESTE deploy ja usou; nao ponha ai rotulo de dub que
+    # veio no arquivo, senao ele vira candidato a ser descartado.
     keep_audio_indices: list[int] | None = None
     audios = [s for s in probe.streams(target) if s.get("codec_type") == "audio"]
+    nossos_rotulos = {track_name.strip().casefold()}
+    nossos_rotulos |= {a.strip().casefold() for a in (label_aliases or []) if a.strip()}
 
     def _nosso(s: dict) -> bool:
         if not lang_matches(s.get("tags", {}).get("language", ""), lang):
             return False
         titulo = (s.get("tags", {}).get("title") or "").strip().casefold()
-        return titulo == track_name.strip().casefold()
+        return titulo in nossos_rotulos
 
     if any(_nosso(s) for s in audios):
         keep_audio_indices = [int(s["index"]) for s in audios if not _nosso(s)]
