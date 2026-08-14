@@ -6,8 +6,9 @@ import time
 import uvicorn
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from . import config, health, logbuf, mux, reconcile, scanner, sonarr_cache as _sc, staging
+from . import config, health, logbuf, mux, reconcile, scanner, sonarr_cache as _sc, staging, upgrade_watcher
 from .api import make_app
+from .prowlarr import Prowlarr
 from .queue import Queue
 from .settings_store import SettingsStore
 from .shows import ShowsStore
@@ -144,25 +145,21 @@ def run() -> None:
         lambda: _scan_all(cfg, queue, shows),
         "interval",
         hours=cfg.get("scheduler", {}).get("scan_interval_hours", 6),
-        next_run_time=None,
     )
     sched.add_job(
         lambda: _retry_failed(queue, cfg.get("scheduler", {}).get("max_attempts", 3)),
         "interval",
         hours=cfg.get("scheduler", {}).get("retry_interval_hours", 1),
-        next_run_time=None,
     )
     sched.add_job(
         lambda: staging.sweep_old(staging_root, max_age_days=janitor_age_days),
         "interval",
         hours=cfg.get("scheduler", {}).get("janitor_interval_hours", 12),
-        next_run_time=None,
     )
     sched.add_job(
         lambda: health.run_all_checks(sources),
         "interval",
         minutes=cfg.get("scheduler", {}).get("health_interval_minutes", 30),
-        next_run_time=None,
     )
 
     def _reconcile():
@@ -176,13 +173,53 @@ def run() -> None:
         _reconcile,
         "interval",
         hours=cfg.get("scheduler", {}).get("reconcile_interval_hours", 24),
-        next_run_time=None,
     )
     sched.add_job(
         lambda: sonarr_cache.sync(prefetch_images=True),
         "interval",
         minutes=cfg.get("scheduler", {}).get("sonarr_cache_interval_minutes", 30),
-        next_run_time=None,
+    )
+
+    def _upgrade_sweep():
+        """Look for done@1080p eps that have a 4K release on Prowlarr and
+        re-monitor them so Sonarr grabs the upgrade. Also retry failed jobs
+        whose error indicates the CR dub wasn't available yet."""
+        try:
+            cur_settings = settings.load() or {}
+            pw = (cur_settings.get("prowlarr") or {})
+            url, key = pw.get("url"), pw.get("api_key")
+            if not (url and key):
+                # Fall back to config.yml
+                url = url or cfg.get("prowlarr", {}).get("url", "")
+                key = key or cfg.get("prowlarr", {}).get("api_key", "")
+            prowlarr = Prowlarr(url or "", key or "")
+            sonarr_url, sonarr_key = _sonarr_creds_local()
+            sonarr = Sonarr(sonarr_url, sonarr_key)
+            sonarr_prefix = (cfg.get("paths_extra") or {}).get("sonarr_prefix", "/downloads")
+            from_date = ((cur_settings.get("upgrade_watcher") or {}).get("from_date")
+                         or cfg.get("upgrade_watcher", {}).get("from_date"))
+            res = upgrade_watcher.check_and_trigger_upgrades(
+                cfg, queue, shows, sonarr, prowlarr,
+                path_remap=(sonarr_prefix, cfg["paths"]["library_in_container"]),
+                from_date=from_date,
+            )
+            log.info("upgrade_watcher: %s", res)
+            n_reset = upgrade_watcher.retry_dub_unavailable_failures(queue)
+            if n_reset:
+                log.info("upgrade_watcher: %d 'dub-unavailable' jobs requeued", n_reset)
+        except Exception as e:
+            log.warning("upgrade_watcher sweep failed: %s", e)
+
+    def _sonarr_creds_local() -> tuple[str, str]:
+        s = (settings.load() or {}).get("sonarr") or {}
+        url = s.get("url") or cfg.get("sonarr", {}).get("url", "")
+        key = s.get("api_key") or cfg.get("sonarr", {}).get("api_key", "")
+        return url, key
+
+    sched.add_job(
+        _upgrade_sweep,
+        "interval",
+        hours=cfg.get("scheduler", {}).get("upgrade_watcher_interval_hours", 12),
     )
     sched.start()
     # Initial health probe in background so dashboard reflects state on first load

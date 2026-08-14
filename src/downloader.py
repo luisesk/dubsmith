@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 from . import security
@@ -19,6 +20,64 @@ log = logging.getLogger(__name__)
 # Serializes the {write dir-path.yml + spawn aniDL} critical section.
 # mdnx reads its config at boot, so once aniDL is running it has its own dir.
 _MDNX_BOOT_LOCK = threading.Lock()
+
+# Teto de downloads contra a Crunchyroll.
+#
+# O Sonarr pode concluir que centenas de episodios merecem upgrade de uma vez,
+# e cada job vira um mdnx logado na conta. A mesma conta serve o dubnab. Sem
+# teto, um scan periodico ou um retry em massa derruba o token.
+#
+# Dimensionado a partir do volume medido no Sonarr em 2026-08-12: as series
+# catalogadas no dubsmith importam 7,5 episodios/dia em media, com pico de 29.
+# 4/h da 96/dia, folga confortavel sobre o pico sem parecer varredura.
+#
+# Vale so para download de video/audio. As chamadas de metadado (probe_*,
+# search_show) ficam de fora: sao baratas e nao puxam midia.
+MAX_DOWNLOADS_POR_HORA = int(os.environ.get("DUBSMITH_MAX_DOWNLOADS_POR_HORA", "4"))
+INTERVALO_MINIMO_S = int(os.environ.get("DUBSMITH_INTERVALO_MINIMO_S", "60"))
+
+_TETO_LOCK = threading.Lock()
+_LANCAMENTOS: list[float] = []
+
+
+class TetoDeTaxaExcedido(RuntimeError):
+    """Download recusado para proteger a conta do provedor."""
+
+
+def _checar_teto() -> None:
+    """Levanta TetoDeTaxaExcedido se o download nao couber na janela.
+
+    Levanta em vez de dormir de proposito: dormir prenderia o worker e
+    esconderia o motivo. Falhando, o job registra o erro e volta pela via
+    normal de retry.
+    """
+    agora = time.time()
+    with _TETO_LOCK:
+        _LANCAMENTOS[:] = [t for t in _LANCAMENTOS if agora - t < 3600]
+        if len(_LANCAMENTOS) >= MAX_DOWNLOADS_POR_HORA:
+            espera = int(3600 - (agora - _LANCAMENTOS[0]))
+            raise TetoDeTaxaExcedido(
+                f"teto de {MAX_DOWNLOADS_POR_HORA} downloads/h atingido; "
+                f"proxima vaga em ~{espera}s")
+        if _LANCAMENTOS and agora - _LANCAMENTOS[-1] < INTERVALO_MINIMO_S:
+            falta = int(INTERVALO_MINIMO_S - (agora - _LANCAMENTOS[-1]))
+            raise TetoDeTaxaExcedido(
+                f"intervalo minimo de {INTERVALO_MINIMO_S}s entre downloads; "
+                f"faltam {falta}s")
+        _LANCAMENTOS.append(agora)
+
+
+def teto_status() -> dict:
+    """Estado do teto, para a UI e para diagnostico."""
+    agora = time.time()
+    with _TETO_LOCK:
+        recentes = [t for t in _LANCAMENTOS if agora - t < 3600]
+        return {
+            "downloads_na_ultima_hora": len(recentes),
+            "teto_por_hora": MAX_DOWNLOADS_POR_HORA,
+            "intervalo_minimo_s": INTERVALO_MINIMO_S,
+            "ultimo_download_ha_s": int(agora - recentes[-1]) if recentes else None,
+        }
 
 # Dubsmith source key -> mdnx --service flag value
 SERVICE_MAP = {
@@ -149,6 +208,79 @@ def search_show(query: str, limit: int = 10, source: str = "crunchyroll") -> lis
     return list(seen.values())[:limit]
 
 
+def download_audio_only(staging_dir: str, widevine_dir: str,
+                         cr_season_id: str, ep_number: int, season: int,
+                         dub_lang: str, source: str = "crunchyroll",
+                         timeout: int = 600) -> Path | None:
+    """Audio-only download for sync reference. Uses mdnx --novids to skip
+    video bandwidth (~95% smaller). Returns path to the decrypted audio
+    .m4s file, or None on failure.
+
+    Used by the worker to fetch a same-language reference track (e.g. JPN)
+    for high-accuracy cross-correlation against the target file's existing
+    audio of the same language. Discarded after sync — not muxed.
+    """
+    if not security.valid_cr_id(cr_season_id):
+        return None
+    if not security.valid_lang(dub_lang):
+        return None
+    _checar_teto()
+    out_dir = Path(staging_dir) / cr_season_id / f"S{season:02d}" / f"E{ep_number:02d}_ref_{dub_lang}"
+    if out_dir.exists():
+        shutil.rmtree(out_dir, ignore_errors=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    install_cfg = Path("/opt/mdnx/multi-downloader-nx-linux-x64-cli/config")
+    install_cfg.mkdir(parents=True, exist_ok=True)
+    (install_cfg / "dir-path.yml").write_text(
+        f"content: {out_dir}/\nfonts: {out_dir}/.fonts/\n"
+    )
+
+    # Widevine symlink already set up by main downloader; reuse.
+    widevine = Path(widevine_dir)
+    target_wv = install_cfg.parent / "widevine"
+    if not target_wv.exists() and widevine.exists():
+        try:
+            target_wv.symlink_to(widevine)
+        except OSError:
+            pass
+
+    cmd = [
+        "aniDL",
+        "--service", _service(source),
+        "-s", cr_season_id,
+        "-e", str(ep_number),
+        "--dubLang", dub_lang,
+        "--novids",
+        "--nosubs",
+        "--force", "y",
+    ]
+    log.info("mdnx ref-audio: %s", " ".join(cmd))
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        log.warning("ref-audio download timeout for %s ep %d lang %s",
+                    cr_season_id, ep_number, dub_lang)
+        return None
+
+    if r.returncode != 0:
+        tail = (r.stdout or "").splitlines()[-5:]
+        log.warning("mdnx ref-audio exit %d. tail: %s", r.returncode, tail)
+        return None
+
+    # Find decrypted audio .m4s — mdnx names it temp-<id>.audio.m4s
+    candidates = sorted(out_dir.rglob("*.audio.m4s"),
+                        key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        candidates = sorted(out_dir.rglob("*.aac"),
+                            key=lambda p: p.stat().st_mtime, reverse=True)
+    if not candidates:
+        log.warning("ref-audio: no audio file produced for %s ep %d lang %s",
+                    cr_season_id, ep_number, dub_lang)
+        return None
+    return candidates[0]
+
+
 class MdnxDownloader:
     def __init__(self, staging_dir: str, widevine_dir: str,
                  dub_lang: str = "ptBR", sub_lang: str = "ptBR",
@@ -199,6 +331,7 @@ class MdnxDownloader:
             raise ValueError(f"invalid episode number: {ep_number!r}")
         if not security.valid_lang(self.dub_lang) or not security.valid_lang(self.sub_lang):
             raise ValueError(f"invalid lang code")
+        _checar_teto()
         self._ensure_widevine()
         out_dir = self.staging / cr_season_id / f"S{season:02d}" / f"E{ep_number:02d}"
         # Wipe any leftovers from prior attempts before mdnx writes new temps.

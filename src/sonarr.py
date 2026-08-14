@@ -92,10 +92,27 @@ class Sonarr:
         return r.json()
 
     def unmonitor_episode(self, episode_id: int) -> dict:
-        r = self.client.put(
-            f"/api/v3/episode/{episode_id}",
-            json={"monitored": False},
+        return self.set_episode_monitored(episode_id, False)
+
+    def set_episode_monitored(self, episode_id: int, monitored: bool) -> dict:
+        # Sonarr requires the full episode body for PUT — fetch then merge.
+        cur = self.client.get(f"/api/v3/episode/{episode_id}").raise_for_status().json()
+        cur["monitored"] = bool(monitored)
+        r = self.client.put(f"/api/v3/episode/{episode_id}", json=cur)
+        r.raise_for_status()
+        return r.json()
+
+    def episode_search(self, episode_ids: list[int]) -> dict:
+        """Trigger Sonarr to search indexers for the given episodes."""
+        r = self.client.post(
+            "/api/v3/command",
+            json={"name": "EpisodeSearch", "episodeIds": list(episode_ids)},
         )
+        r.raise_for_status()
+        return r.json()
+
+    def episode_file(self, file_id: int) -> dict:
+        r = self.client.get(f"/api/v3/episodefile/{file_id}")
         r.raise_for_status()
         return r.json()
 

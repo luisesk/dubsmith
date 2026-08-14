@@ -78,6 +78,23 @@
 </div>
 
 <div class="card" style="margin-top:1em;">
+  <div class="card-head"><div class="card-title">Audio offset (advanced)</div></div>
+  <div class="card-body">
+    <div style="color:var(--af-text-mute);font-size:12px;margin-bottom:10px;">
+      Constant offset (ms) added to every detected sync delay for this show.
+      Use when CR has content this Bluray rip lacks (vignettes, recap intros,
+      cold-open mismatches). Find the right value by ear on one episode using
+      the manual delay button on /queue-page; the difference between detected
+      and correct value goes here. Negative = pull audio earlier.
+    </div>
+    <input type="number" id="audio_offset_ms" step="100" placeholder="0"
+      value="{{ existing.audio_offset_ms or 0 }}"
+      style="width:140px;padding:6px 10px;background:var(--af-bg-input);border:1px solid var(--af-border);border-radius:6px;color:var(--af-text);font-family:var(--af-font-mono);">
+    <span style="color:var(--af-text-mute);font-size:12px;margin-left:8px;">ms (positive = delay audio, negative = advance audio)</span>
+  </div>
+</div>
+
+<div class="card" style="margin-top:1em;">
   <div class="card-head">
     <div class="card-title">Crunchyroll search · "{{ series.title }}"</div>
   </div>
@@ -194,6 +211,7 @@ async function saveMapping() {
       cr_seasons, season_offset,
       target_audio: document.getElementById('target_audio').value,
       cr_dub_lang: document.getElementById('cr_dub_lang').value,
+      audio_offset_ms: parseInt(document.getElementById('audio_offset_ms').value || '0', 10),
     }),
   });
   if (r.ok) { location.href = '/shows'; }

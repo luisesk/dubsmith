@@ -124,16 +124,21 @@ def _audio_codec(path: str) -> str:
 
 
 def _trim_audio_copy(src: str, out: str, delay_ms: int) -> None:
-    """Lossless frame-aligned trim via `-c:a copy`. Fast (seconds)."""
+    """Lossless frame-aligned trim via `-c:a copy`. Fast (seconds).
+
+    Uses OUTPUT seek (`-ss` after `-i`) — frame-accurate for AAC. Input seek
+    (`-ss` before `-i`) snaps to MKV cluster boundary and undershoots the
+    requested trim by up to ~1s, breaking absolute-delay semantics."""
     trim_s = abs(delay_ms) / 1000
     _run_or_raise(
         [
             "ffmpeg", "-y", "-loglevel", "error",
-            "-ss", f"{trim_s:.3f}",
             "-i", src,
+            "-ss", f"{trim_s:.3f}",
             "-vn", "-sn",
             "-map", "0:a:0",
             "-c:a", "copy",
+            "-avoid_negative_ts", "make_zero",
             out,
         ],
         label="ffmpeg trim copy",
@@ -174,6 +179,63 @@ def _trim_audio(src: str, out: str, delay_ms: int) -> str:
                 pass
     _trim_audio_reencode(src, out, delay_ms)
     return f"reencode-aac (src={codec or 'unknown'})"
+
+
+def remux_with_new_delay(target_path: str, lang: str, new_delay_ms: int,
+                          track_name: str = "Portuguese Brazil",
+                          mux_workdir: str | None = None) -> str:
+    """Re-apply sync delay to an already-muxed dub track without re-downloading.
+
+    Extracts the existing dub track from the target via codec-copy, then runs
+    it through inject() which handles both metadata-sync (positive delays) and
+    frame-trim (negative delays). Avoids the CR re-download for manual-delay
+    iteration.
+
+    Why extract+inject instead of single-pass mkvmerge --sync:
+      mkvmerge --sync writes container-level offset only. MKV cluster
+      timestamps are unsigned — a negative absolute target (e.g. push por
+      4s earlier than video) cannot be expressed and mkvmerge silently
+      resets to the codec's intrinsic offset. inject() handles negative
+      delays by trimming audio frames upfront with ffmpeg.
+
+    Returns final muxed path. Raises if target has no track matching `lang`.
+    """
+    target_p = Path(target_path)
+    target_dir = target_p.parent
+
+    streams = [s for s in probe.streams(target_path, no_cache=True)
+               if s.get("codec_type") == "audio"]
+    dub_track = None
+    for s in streams:
+        s_lang = (s.get("tags", {}).get("language") or "").lower()
+        if lang_matches(s_lang, lang):
+            dub_track = int(s["index"])
+            break
+    if dub_track is None:
+        raise RuntimeError(f"remux: no audio track matching lang={lang} in target")
+
+    work_parent = target_dir
+    if mux_workdir:
+        wp = Path(mux_workdir)
+        try:
+            wp.mkdir(parents=True, exist_ok=True)
+            work_parent = wp
+        except OSError:
+            pass
+
+    with tempfile.TemporaryDirectory(dir=work_parent, prefix="dubsmith-remux-") as td:
+        extracted = os.path.join(td, "dub.mka")
+        t_extract = time.time()
+        _run_or_raise(
+            ["ffmpeg", "-y", "-loglevel", "error",
+             "-i", target_path, "-map", f"0:{dub_track}", "-vn", "-sn",
+             "-c", "copy", extracted],
+            label="ffmpeg extract dub",
+        )
+        log.info("remux extract dub (tid=%d): %.1fs", dub_track, time.time() - t_extract)
+        log.info("remux: target=%dms (delegating to inject for trim+mux)", new_delay_ms)
+        return inject(target_path, extracted, new_delay_ms,
+                      lang=lang, track_name=track_name, mux_workdir=mux_workdir)
 
 
 def _stat_same_fs(a: Path, b: Path) -> bool:

@@ -303,14 +303,35 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
             log.info("webhook SeriesDelete: sid=%d removed=%s cleared=%d", sid, removed, n)
             return {"event": "SeriesDelete", "series_id": sid,
                     "removed_show": removed, "cleared_jobs": n}
-        if event not in ("Download", "Import"):
+        if event not in ("Download", "Import", "Upgrade"):
             return {"skipped": event}
         if not sid:
             return {"error": "no series.id"}
         show = shows.get(sid)
         if not (show and show.get("enabled", True)):
             return {"skipped": f"series {sid} disabled"}
-        return trigger_scan(sid)
+        # Upgrade case (or Download with isUpgrade=true): the file replacing
+        # the previous one has no PT-BR dub yet. Force-reset any 'done' jobs
+        # for the impacted episodes back to 'pending' so the worker re-runs
+        # download → sync → mux on the NEW file.
+        is_upgrade = bool(payload.get("isUpgrade")) or event == "Upgrade"
+        reset = 0
+        if is_upgrade:
+            for ep in (payload.get("episodes") or []):
+                season = ep.get("seasonNumber")
+                episode = ep.get("episodeNumber")
+                if season is None or episode is None:
+                    continue
+                j = queue.by_series(sid, season=int(season), episode=int(episode))
+                if j and j.state == "done":
+                    queue.set_state(j.id, "pending",
+                                    last_error=f"reset by upgrade webhook "
+                                               f"(event={event})")
+                    reset += 1
+        scan_result = trigger_scan(sid)
+        scan_result["upgrade_reset"] = reset
+        scan_result["is_upgrade"] = is_upgrade
+        return scan_result
 
     @app.get("/api/jobs/{job_id}", dependencies=[Depends(require_auth)])
     def get_job(job_id: int):
@@ -360,6 +381,38 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
     def retry_all_failed():
         n = queue.retry_failed(max_attempts=999)
         return {"requeued": n}
+
+    @app.post("/api/upgrade-watcher/run", dependencies=[Depends(require_operator)])
+    def run_upgrade_watcher(series_id: int | None = None,
+                            episode_id: int | None = None,
+                            from_date: str | None = None):
+        """Manual trigger for the upgrade watcher sweep.
+
+        Optional filters: series_id, episode_id, from_date (YYYY-MM-DD).
+        Useful for targeted tests like Slime S04E01 without scanning the whole
+        library.
+        """
+        from . import upgrade_watcher as uw
+        from .prowlarr import Prowlarr
+        cur_settings = (settings.load() if settings else {}) or {}
+        pw = (cur_settings.get("prowlarr") or {})
+        url = pw.get("url") or cfg.get("prowlarr", {}).get("url", "")
+        key = pw.get("api_key") or cfg.get("prowlarr", {}).get("api_key", "")
+        prowlarr = Prowlarr(url or "", key or "")
+        sonarr = _sonarr()
+        sonarr_prefix = (cfg.get("paths_extra") or {}).get("sonarr_prefix", "/downloads")
+        if not from_date:
+            from_date = ((cur_settings.get("upgrade_watcher") or {}).get("from_date")
+                         or cfg.get("upgrade_watcher", {}).get("from_date"))
+        result = uw.check_and_trigger_upgrades(
+            cfg, queue, shows, sonarr, prowlarr,
+            path_remap=(sonarr_prefix, cfg["paths"]["library_in_container"]),
+            from_date=from_date,
+            series_id_filter=series_id,
+            episode_id_filter=episode_id,
+        )
+        result["dub_unavailable_requeued"] = uw.retry_dub_unavailable_failures(queue)
+        return result
 
     @app.delete("/api/queue/clear", dependencies=[Depends(require_operator)])
     def clear_queue(state: str | None = None, error_like: str | None = None):
@@ -561,6 +614,7 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
             season_offset=season_offset,
             target_audio=payload.get("target_audio"),
             cr_dub_lang=payload.get("cr_dub_lang"),
+            audio_offset_ms=int(payload.get("audio_offset_ms") or 0),
             source=source,
             enabled=True,
         )
