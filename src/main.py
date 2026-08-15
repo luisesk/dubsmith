@@ -117,12 +117,10 @@ def process_series(cfg: dict, series_id: int, dry_run: bool = False) -> int:
         except Exception as e:
             log.warning("library refresh failed: %s", e)
 
-    nt = cfg.get("ntfy") or {}
-    if nt.get("url"):
-        notify.ntfy(
-            nt["url"], nt["topic"],
-            f"{show['name']} dub injection: ok={ok} failed={failed} quarantined={quarantined}",
-        )
+    notify.push(
+        cfg.get("ntfy") or {},
+        f"{show['name']} dub injection: ok={ok} failed={failed} quarantined={quarantined}",
+    )
 
     log.info("done: ok=%d failed=%d quarantined=%d", ok, failed, quarantined)
     return 0 if failed == 0 else 2

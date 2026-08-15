@@ -491,11 +491,7 @@ class Worker:
             except Exception as e:
                 log.warning("sonarr unmonitor failed: %s", e)
         # ntfy push (best-effort)
-        nt = cfg.get("ntfy") or {}
-        if nt.get("url") and nt.get("topic"):
-            notify.ntfy(
-                nt["url"], nt["topic"],
-                f"{show.get('name','?')} S{job.season:02d}E{job.episode:02d} dub injected (delay {result_delay}ms)",
-                title="plex-dub",
-                token=nt.get("token"),
-            )
+        notify.push(
+            cfg.get("ntfy") or {},
+            f"{show.get('name','?')} S{job.season:02d}E{job.episode:02d} dub injected (delay {result_delay}ms)",
+        )
