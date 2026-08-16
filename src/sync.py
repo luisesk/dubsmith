@@ -1,10 +1,12 @@
 """Audio offset detection via FFT cross-correlation.
 
 Two modes:
-- detect(): single-window correlation (legacy).
+- detect(): correlates N janelas depois da abertura e devolve a mediana, mais
+  os lags por janela para quem quiser medir concordancia.
 - detect_multi_window(): split signal into N chunks, correlate each, take
   median offset. Robust to content divergence (recap intros, OP/ED differences)
-  because outlier windows don't sway the median.
+  because outlier windows don't sway the median. Cuidado: as janelas dele
+  comecam em 0, entao pega a abertura, ao contrario de detect().
 """
 import logging
 import os
@@ -30,10 +32,14 @@ class SyncResult:
 
 def _extract_wav(src: str, out: str, sr: int, trim_s: int,
                  map_idx: int | None = None, start_s: int = 0) -> None:
-    cmd = ["ffmpeg", "-y", "-loglevel", "error"]
-    if start_s > 0:
-        cmd += ["-ss", str(start_s)]
-    cmd += ["-i", src]
+    # -ss e emitido sempre, mesmo em 0. Sem ele o ffmpeg escreve o WAV a partir
+    # do primeiro pacote e o offset inicial do container some, porque WAV nao
+    # carrega timestamp. Um track japones com start_time de 75ms fazia a
+    # deteccao pedir 82ms a menos do que o certo (75ms de container mais o
+    # pre-skip do codec), e o dub entrava adiantado por essa diferenca. Com o
+    # seek o offset e respeitado nos dois lados e ainda cobre o caso, hoje
+    # inexistente, de a origem trazer offset proprio.
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-ss", str(start_s), "-i", src]
     if map_idx is not None:
         cmd += ["-map", f"0:{map_idx}"]
     cmd += ["-t", str(trim_s), "-ac", "1", "-ar", str(sr), out]
@@ -682,28 +688,56 @@ def detect_first_speech_offset(target_path: str, target_audio_index: int,
 
 
 def detect(target_path: str, target_jpn_index: int, source_path: str,
-           trim_s: int = 120, bound_s: int = 15, sr: int = 8000) -> SyncResult:
-    """Compute delay (ms) source needs to align to target jpn track. Positive = delay source."""
+           skip_s: int = 120, bound_s: int = 15, sr: int = 8000,
+           windows: int = 4, window_s: int = 60) -> SyncResult:
+    """Compute delay (ms) source needs to align to target jpn track. Positive = delay source.
+
+    Correlaciona varias janelas depois de `skip_s` e devolve a mediana, em vez
+    de uma unica janela colada no inicio do episodio.
+
+    O comeco do episodio e a pior regiao possivel para correlacionar: cold open
+    quase mudo seguido de abertura, que e musica, e musica casa bem em varios
+    lags. Num caso medido o lag verdadeiro (+225ms) aparecia com 0,92 da altura
+    do pico vencedor dentro da janela 0-120s, entao o argmax pegou o pico errado
+    e ainda reportou score alto. Todas as janelas depois de 120s concordavam em
+    +225ms com 1ms de diferenca entre si.
+
+    `windows` tambem devolve os lags por janela: a discordancia entre elas e uma
+    medida de confianca de verdade, ao contrario do score, que so diz se existe
+    um pico afiado e nao se ele e o certo.
+    """
     with tempfile.TemporaryDirectory() as td:
-        a = os.path.join(td, "tgt.wav")
-        b = os.path.join(td, "src.wav")
-        _extract_wav(target_path, a, sr=sr, trim_s=trim_s, map_idx=target_jpn_index)
-        _extract_wav(source_path, b, sr=sr, trim_s=trim_s)
-        sr_a, sig_a = _load(a)
-        sr_b, sig_b = _load(b)
-        if sr_a != sr_b:
-            raise RuntimeError(f"sample rate mismatch: {sr_a} vs {sr_b}")
-        n = max(len(sig_a), len(sig_b))
-        sig_a = np.pad(sig_a, (0, n - len(sig_a)))
-        sig_b = np.pad(sig_b, (0, n - len(sig_b)))
-        corr = fftconvolve(sig_a, sig_b[::-1], mode="full")
-        center = n - 1
-        max_lag = int(bound_s * sr_a)
-        start = max(0, center - max_lag)
-        end = min(len(corr), center + max_lag + 1)
-        bounded = corr[start:end]
-        peak = int(np.argmax(bounded)) + start
-        lag = peak - center
-        offset_s = lag / sr_a
-        score = float(np.max(bounded) / (np.mean(np.abs(corr)) + 1e-9))
-        return SyncResult(delay_ms=int(round(offset_s * 1000)), score=score)
+        lags: list[int] = []
+        scores: list[float] = []
+        for i in range(windows):
+            start_s = skip_s + i * window_s
+            a = os.path.join(td, f"tgt_{i}.wav")
+            b = os.path.join(td, f"src_{i}.wav")
+            try:
+                _extract_wav(target_path, a, sr=sr, trim_s=window_s,
+                             map_idx=target_jpn_index, start_s=start_s)
+                _extract_wav(source_path, b, sr=sr, trim_s=window_s,
+                             start_s=start_s)
+                sr_a, sig_a = _load(a)
+                sr_b, sig_b = _load(b)
+            except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+                # Janela passou do fim do arquivo, ou saiu vazia. As demais valem.
+                continue
+            if sr_a != sr_b:
+                raise RuntimeError(f"sample rate mismatch: {sr_a} vs {sr_b}")
+            if len(sig_a) < sr_a or len(sig_b) < sr_b:
+                continue
+            lag, score = _correlate(sig_a, sig_b, sr_a, bound_s)
+            lags.append(lag)
+            scores.append(score)
+
+        if not lags:
+            raise RuntimeError(
+                f"sync: nenhuma janela utilizavel a partir de {skip_s}s "
+                f"({windows}x{window_s}s)")
+        spread = max(lags) - min(lags)
+        log.info("sync: janelas=%s spread=%dms mediana=%dms",
+                 lags, spread, int(statistics.median(lags)))
+        return SyncResult(delay_ms=int(statistics.median(lags)),
+                          score=float(statistics.median(scores)),
+                          windows=lags)

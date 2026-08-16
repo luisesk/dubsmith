@@ -83,7 +83,7 @@ def process_series(cfg: dict, series_id: int, dry_run: bool = False) -> int:
             jpn_idx = probe.jpn_audio_index(m.target_path)
             result = sync.detect(
                 m.target_path, jpn_idx, str(src_path),
-                trim_s=sync_cfg["trim_seconds"],
+                skip_s=sync_cfg["trim_seconds"],
                 bound_s=sync_cfg["bound_seconds"],
             )
             log.info("sync delay=%dms score=%.2f", result.delay_ms, result.score)

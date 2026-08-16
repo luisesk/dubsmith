@@ -390,7 +390,7 @@ class Worker:
                 jpn_idx = probe.jpn_audio_index(job.target_path)
                 result = sync.detect(
                     job.target_path, jpn_idx, str(src_path),
-                    trim_s=sync_cfg["trim_seconds"],
+                    skip_s=sync_cfg["trim_seconds"],
                     bound_s=sync_cfg["bound_seconds"],
                 )
                 # Per-show manual offset override — added on top of detection
@@ -405,6 +405,25 @@ class Worker:
                 return
 
             log.info("sync delay=%dms score=%.2f", result.delay_ms, result.score)
+
+            # Concordancia entre janelas, nao prominencia de pico, e o que diz se
+            # o valor esta certo. O score mede se existe um pico afiado; num caso
+            # medido ele deu 20,9 para um lag 224ms errado enquanto as janelas
+            # discordavam em 3761ms. Espalhamento grande significa ou pico errado
+            # numa janela ou versoes com cortes diferentes, e nos dois casos nao
+            # existe um delay unico que sirva para o episodio inteiro.
+            spread_max = int(cfg["sync"].get("max_window_spread_ms", 50))
+            janelas = result.windows or []
+            spread = (max(janelas) - min(janelas)) if len(janelas) > 1 else 0
+            if spread > spread_max:
+                self.queue.set_state(
+                    job.id, "quarantined",
+                    sync_delay_ms=result.delay_ms, sync_score=result.score,
+                    last_error=(f"janelas discordam em {spread}ms (teto {spread_max}ms): "
+                                f"{janelas} — nenhum delay unico serve"),
+                )
+                _clean()
+                return
 
             if result.score < cfg["sync"]["min_score"]:
                 self.queue.set_state(
