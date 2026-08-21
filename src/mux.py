@@ -207,6 +207,15 @@ def remux_with_new_delay(target_path: str, lang: str, new_delay_ms: int,
                           label_aliases: list[str] | None = None) -> str:
     """Re-apply sync delay to an already-muxed dub track without re-downloading.
 
+    CUIDADO: o delay so e absoluto para faixa cujo offset mora em metadado de
+    container, que e o caso de delay positivo. Para faixa fisicamente cortada,
+    delay negativo, ele age como RELATIVO: a extracao abaixo e
+    `ffmpeg -i target -map 0:dub -c copy` sem `-ss`, que descarta offset de
+    container (verificado: 958ms de metadado viram 958ms de residuo quando
+    extraidos sem seek) mas nao desfaz corte que ja esta nas amostras. Passar
+    valor absoluto aqui aplica o corte duas vezes num arquivo real. Nao use
+    isto para agir sobre residuo de verificacao: reinjete do audio original.
+
     Extracts the existing dub track from the target via codec-copy, then runs
     it through inject() which handles both metadata-sync (positive delays) and
     frame-trim (negative delays). Avoids the CR re-download for manual-delay
@@ -296,7 +305,8 @@ def _sweep_orphan_tempfiles(target_dir: Path) -> int:
 def inject(target: str, source: str, delay_ms: int,
            lang: str = "por", track_name: str = "Portuguese Brazil",
            mux_workdir: str | None = None,
-           label_aliases: list[str] | None = None) -> str:
+           label_aliases: list[str] | None = None,
+           verify_cb=None) -> str:
     """Mux source audio into target. Strips any pre-existing track of the same lang
     (resync case). Returns path to final file (may be renamed with a lang suffix).
 
@@ -304,6 +314,11 @@ def inject(target: str, source: str, delay_ms: int,
     disk), then the result is copied to the target's NFS dir for atomic swap.
     Avoids NFS small-write latency during the merge. Falls back to target_dir
     if mux_workdir is unwritable.
+
+    verify_cb: callable(caminho_temporario) opcional, chamada no arquivo
+    mesclado ANTES de ele substituir o da library. Se ela levantar, o merge
+    aborta com o arquivo original intacto. E isso que faz reprovacao virar
+    "segurou" em vez de "avisou depois que ja tinha ido".
     """
     t0 = time.time()
     target_p = Path(target)
@@ -428,6 +443,13 @@ def inject(target: str, source: str, delay_ms: int,
         new_size = os.path.getsize(out_tmp)
         if new_size < orig_size * 0.9:
             raise RuntimeError(f"merged file suspiciously small: {new_size} < 90% of {orig_size}")
+
+        # Ultimo portao antes do artefato virar o arquivo da library. Qualquer
+        # excecao aqui deixa `final` exatamente como estava.
+        if verify_cb is not None:
+            t_ver = time.time()
+            verify_cb(out_tmp)
+            log.info("verify: %.1fs", time.time() - t_ver)
 
         # Land the file at `final` atomically. If we staged on local disk, copy
         # to a sibling tempfile on the target FS first so os.replace is atomic.

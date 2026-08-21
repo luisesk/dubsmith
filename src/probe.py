@@ -76,11 +76,27 @@ def has_audio_lang(path: str, lang: str) -> bool:
     return False
 
 
+# Rotulos que identificam faixa japonesa quando a tag de idioma esta ausente.
+_TITULO_JPN = ("japanese", "japones", "japonês", "jpn", "日本語")
+
+
 def jpn_audio_index(path: str) -> int:
-    """Stream index of the first jpn audio track, or first audio if none jpn."""
+    """Stream index of the first jpn audio track, or first audio if none jpn.
+
+    O titulo entra na busca porque rip multi-idioma costuma vir sem tag de
+    idioma nenhuma. Num arquivo real as cinco faixas eram
+    "ToonFlix.in - [Hindi/Tamil/Telugu/English/Japanese]" sem tag alguma, e
+    cair direto no "primeira faixa de audio" devolvia o hindi: a deteccao
+    correlacionava o dub contra hindi e reportava score 381, porque
+    correlacao boa contra a referencia errada continua sendo correlacao boa.
+    """
     audios = [s for s in streams(path) if s.get("codec_type") == "audio"]
     for s in audios:
         if lang_matches(s.get("tags", {}).get("language", ""), "jpn"):
+            return int(s["index"])
+    for s in audios:
+        titulo = ((s.get("tags") or {}).get("title") or "").casefold()
+        if any(t in titulo for t in _TITULO_JPN):
             return int(s["index"])
     if audios:
         return int(audios[0]["index"])

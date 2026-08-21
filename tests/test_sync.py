@@ -36,12 +36,15 @@ def test_detect_recovers_known_delay(tmp_path):
     _write_wav(str(src_wav), sr, delayed)
 
     # bypass ffmpeg by intercepting _extract_wav: copy wav unchanged
-    def fake_extract(src, out, sr, trim_s, map_idx=None):
+    def fake_extract(src, out, sr, trim_s, map_idx=None, start_s=0):
         import shutil
         shutil.copy(src, out)
 
+    # detect() passou de trim_s para janelas (skip_s + windows x window_s).
+    # Uma janela unica sem skip reproduz o comportamento que este teste cobria.
     with patch("src.sync._extract_wav", side_effect=fake_extract):
-        result = sync.detect(str(tgt_wav), 0, str(src_wav), trim_s=duration, bound_s=5, sr=sr)
+        result = sync.detect(str(tgt_wav), 0, str(src_wav), skip_s=0, windows=1,
+                             window_s=duration, bound_s=5, sr=sr)
 
     # negative delay because target leads source
     assert abs(abs(result.delay_ms) - 320) <= 10
@@ -59,12 +62,13 @@ def test_detect_low_score_for_noise(tmp_path):
     _write_wav(str(p1), sr, a)
     _write_wav(str(p2), sr, b)
 
-    def fake_extract(src, out, sr, trim_s, map_idx=None):
+    def fake_extract(src, out, sr, trim_s, map_idx=None, start_s=0):
         import shutil
         shutil.copy(src, out)
 
     with patch("src.sync._extract_wav", side_effect=fake_extract):
-        result = sync.detect(str(p1), 0, str(p2), trim_s=duration, bound_s=5, sr=sr)
+        result = sync.detect(str(p1), 0, str(p2), skip_s=0, windows=1,
+                             window_s=duration, bound_s=5, sr=sr)
 
     # uncorrelated noise should score modestly (well below ~10 we'd expect for matched audio)
     assert result.score < 8.0

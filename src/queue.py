@@ -255,13 +255,21 @@ class Queue:
             )
             return cur.rowcount
 
-    def retry_failed(self, max_attempts: int = 3) -> int:
-        """Reset failed jobs (under attempt cap) back to pending."""
+    def retry_failed(self, max_attempts: int = 3, reset_attempts: bool = False) -> int:
+        """Reset failed jobs (under attempt cap) back to pending.
+
+        reset_attempts zera o contador junto. Fica desligado por padrao de
+        proposito: zerar sempre tornaria `max_attempts` decorativo, ja que toda
+        chamada devolveria a cota inteira e nenhum job jamais bateria o teto.
+        Ligar so em retry deliberado de operador ("tenta tudo de novo"), que e
+        o caso do /api/queue/retry-all — la, sem o reset, o job volta para
+        pending com a cota estourada, roda uma unica vez e morre de novo.
+        """
         now = time.time()
+        sets = "state='pending', updated_at=?" + (", attempts=0" if reset_attempts else "")
         with self._conn() as c:
             cur = c.execute(
-                "UPDATE jobs SET state='pending', updated_at=? "
-                "WHERE state='failed' AND attempts < ?",
+                f"UPDATE jobs SET {sets} WHERE state='failed' AND attempts < ?",
                 (now, max_attempts),
             )
             return cur.rowcount

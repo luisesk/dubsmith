@@ -1,10 +1,14 @@
 """Pipeline worker: process one queued job end-to-end."""
 import logging
+import math
+import os
+import shutil
+import statistics
 import subprocess
 import time
 from pathlib import Path
 
-from . import downloader, events, health, mux, notify, probe, staging, sync
+from . import downloader, events, health, mux, notify, probe, staging, sync, verify
 from .lang import lang_matches, normalize
 from .downloader import MdnxDownloader
 from .queue import Job, Queue
@@ -18,6 +22,62 @@ log = logging.getLogger(__name__)
 # the pristine copy is dead weight. Sweep on first job of a worker process.
 _DUB_CACHE_TTL_S = 30 * 24 * 3600
 _DUB_CACHE_SWEEP_DONE = False
+
+# Serve so para responder "esta pasta e mesmo de uma serie da library?" antes
+# de decidir baixar um episodio inteiro.
+_EXT_VIDEO = {".mkv", ".mp4", ".avi", ".m4v", ".ts", ".mov", ".wmv"}
+
+# Altura a partir da qual um arquivo da library nunca pode ser substituido pelo
+# download da CR, aconteca o que acontecer com o sync. A CR entrega no maximo
+# 1080p, entao a troca de um 2160p seria perda garantida e irreversivel.
+_ALTURA_INTOCAVEL = 1440
+
+
+def _consenso_janelas(janelas: list[int], cfg: dict) -> tuple[bool, str]:
+    """Diz se as janelas de deteccao concordam o bastante para valer um delay.
+
+    Espelha `verify._julgar`: mediana primeiro, depois quantas janelas caem
+    perto dela. Amplitude crua reprova por causa de uma janela solitaria, e a
+    mediana que o `sync` devolve nem chega a olhar para essa janela.
+
+    Devolve (True, "") quando passa, ou (False, motivo) quando nao.
+    """
+    if len(janelas) < 2:
+        return True, ""
+    conf = cfg.get("sync") or {}
+    # consenso_ms tem que ser MENOR que spread_max, senao o gate se auto-sabota:
+    # uma janela a exatamente spread_max da mediana entra no grupo dos
+    # concordantes e estoura o spread desse mesmo grupo. Com os dois em 50 o
+    # Frieren S02E07 reprovou com janelas [7, 8, -43, 8], spread 51 por 1ms.
+    # Mesma proporcao que o verify._julgar ja usava (25 contra 60).
+    consenso_ms = int(conf.get("consenso_ms", 25))
+    spread_max = int(conf.get("max_window_spread_ms", 50))
+    frac = float(conf.get("min_consenso_frac", 0.6))
+
+    mediana = int(statistics.median(janelas))
+    concordam = [l for l in janelas if abs(l - mediana) <= consenso_ms]
+    minimo = max(2, math.ceil(len(janelas) * frac))
+    spread = max(concordam) - min(concordam) if concordam else 0
+
+    if len(concordam) < minimo:
+        return False, (f"janelas discordam: so {len(concordam)}/{len(janelas)} "
+                       f"dentro de {consenso_ms}ms da mediana {mediana}ms "
+                       f"(minimo {minimo}): {janelas}, nenhum delay unico serve")
+    if spread > spread_max:
+        return False, (f"janelas concordantes ainda espalhadas: {spread}ms "
+                       f"(teto {spread_max}ms) entre {concordam}")
+    return True, ""
+
+
+def _altura_video(caminho: str) -> int | None:
+    """Altura em pixels do primeiro stream de video, ou None se nao der para ler."""
+    try:
+        for s in probe.streams(caminho):
+            if s.get("codec_type") == "video" and s.get("height"):
+                return int(s["height"])
+    except Exception as e:
+        log.warning("nao deu para medir a altura de %s: %s", caminho, e)
+    return None
 
 
 def resolve_cr_season(entry, cr_ep: int, source: str = "crunchyroll",
@@ -111,9 +171,13 @@ def _dub_cache_write(cfg: dict, src_path: Path, series_id: int, season: int,
     cache_path = cache_dir / f"E{episode:02d}-{lang}.mka"
     tmp_path = cache_path.with_suffix(".mka.tmp")
     try:
+        # -f matroska e obrigatorio: o arquivo temporario termina em .tmp e o
+        # ffmpeg nao consegue inferir o container pela extensao, entao sem isso
+        # toda escrita no cache falha e cada iteracao do operador re-baixa.
         subprocess.run(
             ["ffmpeg", "-y", "-loglevel", "error", "-i", str(src_path),
-             "-map", "0:a:0", "-vn", "-sn", "-c", "copy", str(tmp_path)],
+             "-map", "0:a:0", "-vn", "-sn", "-c", "copy",
+             "-f", "matroska", str(tmp_path)],
             check=True, capture_output=True, text=True,
         )
         tmp_path.replace(cache_path)
@@ -186,6 +250,275 @@ class Worker:
                 return n, idx
         return None, None
 
+    def _verify_cb(self, job, applied_ms, audio_lang, audio_label, cfg, box):
+        """Callback para mux.inject(verify_cb=...). Levanta VerificationFailed
+        para o merge nunca aterrissar quando o artefato nao se certifica."""
+        vcfg = cfg.get("verify") or {}
+
+        def _cb(tmp_path: str) -> None:
+            res = verify.verify_muxed(
+                tmp_path,
+                dub_lang=audio_lang,
+                track_name=audio_label,
+                label_aliases=cfg["target_language"].get("audio_label_aliases"),
+                applied_delay_ms=applied_ms,
+                cfg=vcfg,
+            )
+            box["result"] = res
+            log.info("verify job %d aplicado=%dms: %s", job.id, applied_ms, res.summary())
+            if not res.ok:
+                raise verify.VerificationFailed(res)
+
+        return _cb
+
+    def _mux_verified(self, job, target_path, source_path, delay_ms,
+                      audio_lang, audio_label, mux_workdir, cfg):
+        """mux.inject mais verificacao, com no maximo UMA correcao automatica
+        reinjetada do MESMO audio original.
+
+        Devolve (caminho_final, VerifyResult, delay_aplicado). Levanta
+        VerificationFailed quando o artefato nao se certifica, e nesse caso o
+        arquivo da library segue intacto, porque a verificacao roda antes da
+        substituicao atomica dentro do mux.inject.
+
+        A correcao reexecuta mux.inject a partir do audio original com delay
+        ABSOLUTO, que e a mesma chamada do caminho normal. Nunca via
+        mux.remux_with_new_delay, que e relativo para faixa ja cortada.
+        """
+        vcfg = cfg.get("verify") or {}
+        aliases = cfg["target_language"].get("audio_label_aliases")
+        if not vcfg.get("enabled", True):
+            final = mux.inject(target_path, source_path, delay_ms,
+                               lang=audio_lang, track_name=audio_label,
+                               mux_workdir=mux_workdir, label_aliases=aliases)
+            return final, None, delay_ms
+
+        max_passes = 2 if vcfg.get("auto_correct", True) else 1
+        teto = int(vcfg.get("auto_correct_max_ms",
+                            verify.DEFAULTS["auto_correct_max_ms"]))
+        aplicado = delay_ms
+        ultimo = None
+        for tentativa in range(max_passes):
+            box: dict = {}
+            try:
+                final = mux.inject(
+                    target_path, source_path, aplicado,
+                    lang=audio_lang, track_name=audio_label,
+                    mux_workdir=mux_workdir, label_aliases=aliases,
+                    verify_cb=self._verify_cb(job, aplicado, audio_lang,
+                                              audio_label, cfg, box),
+                )
+                return final, box.get("result"), aplicado
+            except verify.VerificationFailed as e:
+                ultimo = e.result
+                pode = (tentativa + 1 < max_passes
+                        and ultimo.confident
+                        and ultimo.residual_ms is not None
+                        and abs(ultimo.residual_ms) <= teto)
+                if not pode:
+                    raise
+                corrigido = aplicado + ultimo.residual_ms
+                log.warning("job %d reprovou (%s); corrigindo %dms -> %dms "
+                            "a partir do audio original",
+                            job.id, ultimo.reason, aplicado, corrigido)
+                self.queue.update_progress(job.id, phase="corrigindo sync")
+                aplicado = corrigido
+        raise verify.VerificationFailed(ultimo)
+
+    def _quarantine_unverified(self, job, res, aplicado, cfg,
+                               src_path=None, audio_lang=None):
+        """Registra o residuo medido e a correcao ja calculada, e guarda o audio
+        original no cache para a retentativa do operador cair no caminho rapido
+        em vez de gastar um download da Crunchyroll."""
+        if res is None:
+            msg = "verificacao pos-mux falhou (sem resultado)"
+        elif res.residual_ms is None:
+            msg = f"verificacao pos-mux: {res.reason}; ref[{res.ref_desc}]"
+        else:
+            msg = (f"verificacao pos-mux: {res.reason}; "
+                   f"residuo={res.residual_ms:+d}ms spread={res.spread_ms}ms "
+                   f"uteis={res.n_usable}/{res.n_windows} ref[{res.ref_desc}]; "
+                   f"delay manual sugerido {res.suggested_delay_ms:+d}ms")
+        if src_path is not None and audio_lang is not None:
+            try:
+                _dub_cache_write(cfg, src_path, job.series_id, job.season,
+                                 job.episode, audio_lang)
+            except Exception as e:
+                log.warning("dub-cache na quarentena falhou: %s", e)
+        self.queue.set_state(job.id, "quarantined",
+                             sync_delay_ms=aplicado, last_error=msg)
+        log.warning("job %d em quarentena pela verificacao: %s", job.id, msg)
+
+    def _pode_preencher(self, job, cfg) -> str | None:
+        """Devolve None quando vale baixar o episodio inteiro, ou o motivo de nao.
+
+        O arquivo alvo ausente tem duas leituras muito diferentes: buraco de
+        verdade na library, que e o caso interessante, ou volume montado errado,
+        quando `paths.library_in_container` e `paths_extra.sonarr_prefix`
+        divergem e TODO caminho some de uma vez. Confundir os dois seria caro:
+        no segundo caso o dubsmith baixaria o catalogo inteiro achando que a
+        library esta vazia.
+
+        O que separa os dois e a pasta da serie. Se ela existe e ja tem video
+        dentro, a montagem esta certa e o que falta e um episodio. Se ela nao
+        existe, nao da para saber, e ai o comportamento antigo (falhar com a
+        dica de path) e o certo.
+        """
+        conf = (cfg.get("fill_missing") or {})
+        if not conf.get("enabled", True):
+            return (f"target file not found: {job.target_path} — preenchimento "
+                    f"desligado (fill_missing.enabled)")
+
+        destino = Path(job.target_path)
+        pasta = destino.parent
+        if not pasta.is_dir():
+            return (f"target file not found: {job.target_path} — a pasta da serie "
+                    f"tambem nao existe, o que aponta para montagem errada; "
+                    f"confira paths.library_in_container vs "
+                    f"paths_extra.sonarr_prefix no config.yml")
+
+        vizinhos = [p for p in pasta.rglob("*")
+                    if p.suffix.lower() in _EXT_VIDEO and p.is_file()]
+        if not vizinhos:
+            return (f"target file not found: {job.target_path} — a pasta existe "
+                    f"mas esta sem nenhum video, entao nao da para afirmar que "
+                    f"a library esta montada certo; conferir antes de baixar")
+        return None
+
+    def _substituir_por_download(self, job, show, src_path, cfg, emit, motivo) -> bool:
+        """Ultimo recurso quando nenhum delay serve: usar o episodio da CR inteiro.
+
+        Chega aqui um job cujo dub existe (o download acabou de trazer) mas cujo
+        sync nao fecha: as janelas discordam em segundos, ou a verificacao
+        reprovou depois da correcao. Injetar assim mesmo entregaria um arquivo
+        torto, e mandar para fila humana nao resolve nada, porque ninguem vai
+        abrir episodio por episodio.
+
+        Trocar o arquivo resolve pela raiz. O que a Crunchyroll entrega ja vem
+        com video e dub no mesmo relogio, entao a pergunta do sync deixa de
+        existir. O preco e a qualidade da imagem virar a da CR, que pode ser
+        menor que a do arquivo que estava ali.
+
+        Por isso a troca so vale quando a imagem nao piora. A CR entrega no
+        maximo 1080p e em serie antiga entrega 480p: medido em 2026-08-17, 34
+        das 122 trocas ja feitas aterrissaram em 640x480 ou 656x480. Um 2160p
+        nunca e trocado, e nenhuma altura pode cair. O arquivo antigo some no
+        `os.replace`, entao a checagem tem que vir antes.
+
+        Devolve True quando a troca aconteceu.
+        """
+        conf = (cfg.get("fill_missing") or {})
+        if not conf.get("replace_on_unsyncable", True):
+            return False
+
+        alvo = Path(job.target_path)
+        if alvo.exists():
+            altura_alvo = _altura_video(str(alvo))
+            altura_cr = _altura_video(str(src_path))
+            if altura_alvo is None or altura_cr is None:
+                log.warning("job %d: nao consegui comparar as alturas "
+                            "(library=%s CR=%s); nao vou trocar",
+                            job.id, altura_alvo, altura_cr)
+                return False
+            if altura_alvo >= _ALTURA_INTOCAVEL:
+                log.warning("job %d: arquivo da library tem %dp, acima do teto "
+                            "intocavel de %dp; troca bloqueada",
+                            job.id, altura_alvo, _ALTURA_INTOCAVEL)
+                return False
+            if altura_cr < altura_alvo:
+                log.warning("job %d: a CR entrega %dp contra %dp que ja esta na "
+                            "library; troca bloqueada para nao perder resolucao",
+                            job.id, altura_cr, altura_alvo)
+                return False
+
+        try:
+            self._aterrissar_episodio(job, show, src_path, cfg, emit,
+                                      substituir=True, motivo=motivo)
+            return True
+        except Exception as e:
+            log.warning("job %d: troca pelo episodio da CR falhou (%s); "
+                        "seguindo para quarentena", job.id, e)
+            return False
+
+    def _aterrissar_episodio(self, job, show, src_path, cfg, emit,
+                             substituir: bool = False, motivo: str = "") -> None:
+        """Move o episodio baixado para o lugar dele na library.
+
+        Chamado quando o arquivo alvo nao existia. O mkv que o mdnx entrega ja
+        vem completo (video, audio dublado e legendas), porque o download do
+        dubsmith nunca passou `--novids`: ate hoje o pipeline extraia so o audio
+        e jogava o resto fora. Aqui o arquivo inteiro fica.
+
+        Nao ha sync a fazer. O audio dublado e o que a propria Crunchyroll
+        entregou junto do video, entao os dois ja nascem no mesmo relogio, e a
+        verificacao pos-mux, que compara dub contra faixa japonesa da library,
+        nao tem o que comparar.
+        """
+        origem = Path(src_path)
+        dub = show.get("cr_dub_lang") or cfg["target_language"]["cr_dub_lang"]
+
+        fluxos = probe.streams(str(origem))
+        if not any(s.get("codec_type") == "video" for s in fluxos):
+            raise RuntimeError(f"o download nao trouxe video: {origem.name}")
+        if not probe.has_audio_lang(str(origem), dub):
+            raise RuntimeError(f"o download nao trouxe audio {dub}: {origem.name}")
+
+        # O nome vem do que o Sonarr registrou, mas com a extensao do que
+        # baixamos: o caminho antigo pode dizer .avi enquanto o mdnx entrega
+        # mkv. O Sonarr renomeia depois, no rescan.
+        destino = Path(job.target_path).with_suffix(origem.suffix)
+        antigo = Path(job.target_path)
+        if destino.exists() and not substituir:
+            raise RuntimeError(f"destino ja existe, nao vou sobrescrever: {destino}")
+
+        # Copia para um temporario ao lado do destino e so entao renomeia. A
+        # library e outro volume, entao nao existe rename atomico vindo do
+        # staging; o os.replace no fim garante que ninguem veja meio arquivo.
+        parcial = destino.with_name(destino.name + ".dubsmith-parcial")
+        self.queue.update_progress(job.id, progress=0.9, phase="landing in library")
+        try:
+            shutil.copyfile(origem, parcial)
+            os.replace(parcial, destino)
+        finally:
+            if parcial.exists():
+                parcial.unlink(missing_ok=True)
+
+        # Trocar .avi por .mkv deixaria os dois lado a lado, e o Sonarr passaria
+        # a ver o episodio duplicado. So depois do os.replace, que e o ponto em
+        # que o novo ja esta inteiro no lugar.
+        if substituir and antigo.exists() and antigo != destino:
+            try:
+                antigo.unlink()
+                log.info("job %d: removido o arquivo antigo %s", job.id, antigo.name)
+            except OSError as e:
+                log.warning("job %d: nao deu para remover %s: %s", job.id, antigo.name, e)
+
+        tamanho = destino.stat().st_size
+        if substituir:
+            log.warning("job %d: arquivo TROCADO pelo episodio da CR, %s (%.0f MB); "
+                        "motivo: %s", job.id, destino.name, tamanho / 1e6, motivo)
+        else:
+            log.info("job %d: buraco preenchido, %s (%.0f MB)",
+                     job.id, destino.name, tamanho / 1e6)
+
+        # sync_delay_ms=0 descreve a verdade: nada foi deslocado. Deixar nulo
+        # faria a proxima analise achar que o job nunca mediu nada.
+        self.queue.set_state(job.id, "done", target_path=str(destino),
+                             sync_delay_ms=0, sync_score=999.0)
+        emit("done", sync_delay_ms=0)
+
+        settings_data = self.settings.load() if self.settings else {}
+        if (settings_data.get("sonarr", {}) or {}).get("rescan_after_mux", True):
+            try:
+                self.sonarr.rescan_series(job.series_id)
+            except Exception as e:
+                log.warning("sonarr rescan falhou: %s", e)
+        notify.push(
+            cfg.get("ntfy") or {},
+            f"{show.get('name','?')} S{job.season:02d}E{job.episode:02d} "
+            f"baixado inteiro (a library nao tinha o arquivo)",
+        )
+
     def process(self, job: Job) -> str | None:
         """Roda o job. Devolve "deferred" quando o teto de taxa adiou o
         download (o daemon dorme nesse caso), None em qualquer outro desfecho."""
@@ -225,23 +558,34 @@ class Worker:
                                          sync_score=999.0)
                     mux_workdir = (cfg.get("paths") or {}).get(
                         "mux_workdir") or str(Path(cfg["paths"]["staging"]).parent / "mux")
-                    final_path = mux.inject(
-                        job.target_path, str(cached), job.manual_delay_ms,
-                        lang=audio_lang, track_name=audio_label,
-                        mux_workdir=mux_workdir,
-                        label_aliases=cfg["target_language"].get("audio_label_aliases"),
-                    )
+                    try:
+                        final_path, _vres, aplicado = self._mux_verified(
+                            job, job.target_path, str(cached),
+                            job.manual_delay_ms, audio_lang, audio_label,
+                            mux_workdir, cfg)
+                    except verify.VerificationFailed as ve:
+                        # Nao cair no except de baixo, que reparte para
+                        # re-download: o audio original ja esta em cache e
+                        # baixar de novo queimaria vaga do teto a toa.
+                        self._quarantine_unverified(job, ve.result,
+                                                    job.manual_delay_ms, cfg)
+                        try:
+                            cached.touch()
+                        except OSError:
+                            pass
+                        return
                     # Refresh mtime so TTL clock resets on each iteration
                     try:
                         cached.touch()
                     except OSError:
                         pass
-                    self.queue.set_state(job.id, "done", target_path=final_path)
+                    self.queue.set_state(job.id, "done", target_path=final_path,
+                                         sync_delay_ms=aplicado)
                     bus.publish("job", {"id": job.id, "series_id": job.series_id,
                                           "season": job.season, "episode": job.episode,
-                                          "state": "done", "sync_delay_ms": job.manual_delay_ms})
+                                          "state": "done", "sync_delay_ms": aplicado})
                     log.info("done (fast remux): job %d delay=%dms",
-                             job.id, job.manual_delay_ms)
+                             job.id, aplicado)
                     return
                 else:
                     log.info("fast-path: no cache — full re-download will populate cache "
@@ -281,17 +625,17 @@ class Worker:
             self.queue.set_state(job.id, "failed", last_error=f"no cr_seasons mapping for S{job.season}")
             return
 
-        # Pre-flight: target file must exist inside the container before we burn
-        # bandwidth on a 1+ GB mdnx download. Catches path-remap misconfigs
-        # (sonarr_prefix vs library_in_container drift) early with a clear msg.
-        if not Path(job.target_path).exists():
-            self.queue.set_state(
-                job.id, "failed",
-                last_error=(f"target file not found: {job.target_path} — check "
-                            f"paths.library_in_container vs paths_extra.sonarr_prefix "
-                            f"in config.yml"),
-            )
-            return
+        # Arquivo alvo ausente nao e mais fim de linha: quando da para provar que
+        # a library esta montada certo, o episodio inteiro e baixado e ocupa o
+        # lugar vazio. `_pode_preencher` e quem separa buraco de montagem errada.
+        preencher = not Path(job.target_path).exists()
+        if preencher:
+            motivo = self._pode_preencher(job, cfg)
+            if motivo:
+                self.queue.set_state(job.id, "failed", last_error=motivo)
+                return
+            log.info("job %d: library sem o arquivo; baixando o episodio inteiro "
+                     "para %s", job.id, job.target_path)
 
         log.info("=== job %d: S%02dE%02d -> CR season %s ep %d ===",
                  job.id, job.season, job.episode, cr_season_id, cr_ep)
@@ -337,6 +681,15 @@ class Worker:
             # "deferred" avisa o daemon para dormir ate a proxima vaga. Devolver
             # None faria ele reclamar este mesmo job no ciclo seguinte.
             return "deferred"
+        except downloader.DublagemIndisponivel as e:
+            # Terminal por natureza. Encerra como "done" em vez de "failed"
+            # justamente para a varredura periodica nao re-enfileirar o
+            # episodio a cada ciclo e o retry nao gastar mais duas vagas.
+            log.info("[job %s] sem dublagem no catalogo: %s", job.id, e)
+            self.queue.set_state(job.id, "done",
+                                 last_error=f"indisponivel: {e}")
+            _clean()
+            return
         except Exception as e:
             err = str(e)
             # Auto-recovery: when mdnx returns "Episodes not selected!" for a season
@@ -375,6 +728,17 @@ class Worker:
         except Exception:
             pass
 
+        # Buraco na library: o episodio baixado vira o arquivo, e acabou. Nada
+        # de deteccao nem de mux, que so fazem sentido quando ja existe um
+        # arquivo com faixa japonesa para servir de relogio.
+        if preencher:
+            try:
+                self._aterrissar_episodio(job, show, src_path, cfg, emit)
+            except Exception as e:
+                self.queue.set_state(job.id, "failed", last_error=f"preenchimento: {e}")
+            _clean()
+            return
+
         # If operator supplied a manual delay, skip detection entirely.
         if job.manual_delay_ms is not None:
             log.info("job %d using manual delay=%dms (skipping sync detect)", job.id, job.manual_delay_ms)
@@ -409,35 +773,52 @@ class Worker:
             # Concordancia entre janelas, nao prominencia de pico, e o que diz se
             # o valor esta certo. O score mede se existe um pico afiado; num caso
             # medido ele deu 20,9 para um lag 224ms errado enquanto as janelas
-            # discordavam em 3761ms. Espalhamento grande significa ou pico errado
-            # numa janela ou versoes com cortes diferentes, e nos dois casos nao
-            # existe um delay unico que sirva para o episodio inteiro.
-            spread_max = int(cfg["sync"].get("max_window_spread_ms", 50))
+            # discordavam em 3761ms.
+            #
+            # O que se pergunta aqui e se a MAIORIA das janelas concorda, nao se
+            # a pior delas concorda, que e a mesma leitura que verify._julgar ja
+            # fazia do outro lado do mux. Amplitude crua (max - min) reprova um
+            # arquivo bom quando uma unica janela cai em musica ou silencio:
+            # [-46, 3009, -46, -45] tem tres janelas dentro de 1ms e mesmo assim
+            # media 3055ms de amplitude. Medido em 2026-08-17, 50 dos 121
+            # arquivos que o portao antigo mandou trocar tinham consenso claro.
             janelas = result.windows or []
-            spread = (max(janelas) - min(janelas)) if len(janelas) > 1 else 0
-            if spread > spread_max:
+            ok_consenso, razao = _consenso_janelas(janelas, cfg)
+            if not ok_consenso:
+                # O download ja esta na mao e traz video junto. Se nenhum delay
+                # serve, o arquivo da CR inteiro serve, porque nele o dub e o
+                # video ja saem sincronizados da origem.
+                if self._substituir_por_download(job, show, src_path, cfg, emit, razao):
+                    _clean()
+                    return
                 self.queue.set_state(
                     job.id, "quarantined",
                     sync_delay_ms=result.delay_ms, sync_score=result.score,
-                    last_error=(f"janelas discordam em {spread}ms (teto {spread_max}ms): "
-                                f"{janelas} — nenhum delay unico serve"),
+                    last_error=razao,
                 )
                 _clean()
                 return
 
+            # min_score deixou de barrar. O score mede afiacao de pico, nao
+            # acerto, e errou nos dois sentidos: aprovou um job 226ms fora com
+            # 20,9 e reprovou 150 episodios que a verificacao pos-mux teria
+            # medido, corrigido e liberado. Barrar por proxy segurava trabalho
+            # que o teste real aprova. Quem decide agora e a verificacao do
+            # artefato pronto; isto aqui virou aviso.
             if result.score < cfg["sync"]["min_score"]:
-                self.queue.set_state(
-                    job.id, "quarantined",
-                    sync_delay_ms=result.delay_ms, sync_score=result.score,
-                    last_error=f"low confidence ({result.score:.2f}) — set manual delay if needed",
-                )
-                _clean()
-                return
+                log.warning("job %d score baixo (%.2f < %s); seguindo assim mesmo, "
+                            "a verificacao pos-mux decide",
+                            job.id, result.score, cfg["sync"]["min_score"])
             if abs(result.delay_ms) > cfg["sync"]["max_abs_delay_ms"]:
+                razao = (f"delay {result.delay_ms}ms fora da faixa "
+                         f"(teto {cfg['sync']['max_abs_delay_ms']}ms)")
+                if self._substituir_por_download(job, show, src_path, cfg, emit, razao):
+                    _clean()
+                    return
                 self.queue.set_state(
                     job.id, "quarantined",
                     sync_delay_ms=result.delay_ms, sync_score=result.score,
-                    last_error=f"delay {result.delay_ms}ms out of range — set manual delay if needed",
+                    last_error=razao + " — set manual delay if needed",
                 )
                 _clean()
                 return
@@ -455,12 +836,25 @@ class Worker:
             # local disk on most setups). Can be overridden via paths.mux_workdir.
             mux_workdir = (cfg.get("paths") or {}).get(
                 "mux_workdir") or str(Path(cfg["paths"]["staging"]).parent / "mux")
-            final_path = mux.inject(
-                job.target_path, str(src_path), result_delay,
-                lang=audio_lang, track_name=audio_label,
-                mux_workdir=mux_workdir,
-                label_aliases=cfg["target_language"].get("audio_label_aliases"),
-            )
+            final_path, _vres, result_delay = self._mux_verified(
+                job, job.target_path, str(src_path), result_delay,
+                audio_lang, audio_label, mux_workdir, cfg)
+        except verify.VerificationFailed as ve:
+            # Nada aterrissou: o mux.inject levantou antes da substituicao
+            # atomica, entao o arquivo da library segue intacto. A correcao ja
+            # teve a chance dela dentro do _mux_verified, entao chegar aqui
+            # significa que o dub nao encaixa nesse arquivo por delay nenhum.
+            if self._substituir_por_download(job, show, src_path, cfg, emit,
+                                             f"verificacao pos-mux: {ve.result.reason}"
+                                             if ve.result else "verificacao pos-mux"):
+                _clean()
+                return
+            # Guarda o audio original para a retentativa com delay manual cair
+            # no caminho rapido (~25s) em vez de gastar um download.
+            self._quarantine_unverified(job, ve.result, result_delay, cfg,
+                                        src_path=src_path, audio_lang=audio_lang)
+            _clean()
+            return
         except Exception as e:
             self.queue.set_state(job.id, "failed", last_error=f"mux: {e}")
             _clean()
@@ -478,7 +872,11 @@ class Worker:
         # Update target_path to the renamed final file so retries (manual delay,
         # re-detect) operate on the file that actually exists post-mux.
         _clean()
-        self.queue.set_state(job.id, "done", target_path=final_path)
+        # sync_delay_ms tem que registrar o delay REALMENTE aplicado, que muda
+        # quando a verificacao corrige, senao o banco descreve um arquivo que
+        # nao existe e a proxima analise parte de numero errado.
+        self.queue.set_state(job.id, "done", target_path=final_path,
+                             sync_delay_ms=result_delay)
         emit("done", sync_delay_ms=result_delay)
         log.info("done: job %d", job.id)
         # trigger Sonarr rescan so DB picks up new filename

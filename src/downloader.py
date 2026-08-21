@@ -54,6 +54,16 @@ class TetoDeTaxaExcedido(RuntimeError):
     """Download recusado para proteger a conta do provedor."""
 
 
+class DublagemIndisponivel(RuntimeError):
+    """O episodio existe no catalogo, mas nao naquele idioma de dublagem.
+
+    Falha terminal, nao transitoria: re-tentar nunca faz o audio passar a
+    existir. Cada tentativa queima uma vaga do teto de taxa antes de descobrir
+    isso, e com max_attempts=3 um season inteiro sem dub consome centenas de
+    vagas. Em 2026-08-19 foram 74 episodios nessa situacao.
+    """
+
+
 def _checar_teto() -> None:
     """Levanta TetoDeTaxaExcedido se o download nao couber na janela.
 
@@ -496,10 +506,23 @@ class MdnxDownloader:
             tail = "\n".join(last_lines[-15:])
             log.error("mdnx exited %d but produced no media. last lines:\n%s",
                       proc.returncode, tail)
+            # Dublagem ausente e terminal: nao vale gastar mais tentativa.
+            if any("selected language not found in versions" in l.lower()
+                   for l in last_lines):
+                raise DublagemIndisponivel(
+                    f"catalogo nao tem audio {self.dub_lang!r} nesse episodio")
+            # A linha especifica do mdnx vem antes do rodape generico
+            # ("Skip muxing since no vids are downloaded"), e varrer de tras
+            # para frente com "skip" na lista pegava o rodape e jogava fora o
+            # motivo real. Procura o [ERROR] primeiro, generico so no fallback.
             err_line = next((l for l in reversed(last_lines)
-                             if any(k in l.lower() for k in
-                                    ("error", "fail", "blocked", "denied", "license",
-                                     "skip", "not found", "unavailable"))),
-                            last_lines[-1] if last_lines else "no output")
+                             if "error" in l.lower()),
+                            None)
+            if err_line is None:
+                err_line = next((l for l in reversed(last_lines)
+                                 if any(k in l.lower() for k in
+                                        ("fail", "blocked", "denied", "license",
+                                         "skip", "not found", "unavailable"))),
+                                last_lines[-1] if last_lines else "no output")
             raise RuntimeError(f"no media — {err_line[:240]}")
         return outs[0]

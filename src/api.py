@@ -345,7 +345,10 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
         j = queue.get(job_id)
         if not j:
             raise HTTPException(404)
-        queue.set_state(job_id, "pending", last_error=None)
+        # attempts=0 e o ponto: sem isso um job que ja bateu max_attempts volta
+        # para pending com a cota estourada, roda uma unica vez e morre de novo.
+        # Retry explicito de operador significa "tenta de verdade outra vez".
+        queue.set_state(job_id, "pending", attempts=0, last_error=None)
         return {"ok": True}
 
     @app.post("/api/jobs/{job_id}/skip", dependencies=[Depends(require_operator)])
@@ -379,7 +382,7 @@ def make_app(cfg: dict, queue: Queue, shows: ShowsStore,
 
     @app.post("/api/queue/retry-all", dependencies=[Depends(require_operator)])
     def retry_all_failed():
-        n = queue.retry_failed(max_attempts=999)
+        n = queue.retry_failed(max_attempts=999, reset_attempts=True)
         return {"requeued": n}
 
     @app.post("/api/upgrade-watcher/run", dependencies=[Depends(require_operator)])
