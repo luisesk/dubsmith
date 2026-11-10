@@ -6,7 +6,7 @@ FROM python:3.12-slim AS builder
 
 ENV PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive \
-    MDNX_VERSION=v5.8.7
+    MDNX_VERSION=v5.8.8
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl ca-certificates p7zip-full \
